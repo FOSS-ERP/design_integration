@@ -1,0 +1,163 @@
+{
+ "charts": [],
+ "creation": "2025-01-31 10:00:00.000000",
+ "dashboard_name": "Design",
+ "docstatus": 0,
+ "doctype": "Dashboard",
+ "idx": 0,
+ "is_default": 0,
+ "is_standard": 1,
+ "modified": "2025-01-31 10:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Design Integration",
+ "name": "Design",
+ "owner": "Administrator",
+ "refresh_interval": 300,
+ "roles": [
+  {
+   "role": "System Manager"
+  },
+  {
+   "role": "Administrator"
+  }
+ ],
+ "shortcuts": [
+  {
+   "color": "#FF6B6B",
+   "doc_view": "List",
+   "label": "Design Requests",
+   "link_to": "Design Request",
+   "type": "DocType"
+  },
+  {
+   "color": "#4ECDC4",
+   "doc_view": "Dashboard",
+   "label": "Design Items Dashboard",
+   "link_to": "Design Items Dashboard",
+   "type": "DocType"
+  },
+  {
+   "color": "#45B7D1",
+   "doc_view": "List",
+   "label": "All Design Items",
+   "link_to": "Design Request Item",
+   "type": "DocType"
+  }
+ ],
+ "cards": [
+  {
+   "card_name": "Total Design Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Total Design Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[]"
+  },
+  {
+   "card_name": "Pending Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Pending Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"status\",\"operator\":\"in\",\"value\":\"['Approval Drawing','Send for Approval','Design','Production Drawing','BOM','Nesting']\"}]"
+  },
+  {
+   "card_name": "Completed Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Completed Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"status\",\"operator\":\"=\",\"value\":\"Completed\"}]"
+  },
+  {
+   "card_name": "My Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "My Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"assigned_to\",\"operator\":\"=\",\"value\":\"me\"}]"
+  }
+ ],
+ "number_cards": [
+  {
+   "card_name": "Total Design Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Total Design Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[]"
+  },
+  {
+   "card_name": "Pending Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Pending Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"status\",\"operator\":\"in\",\"value\":\"['Approval Drawing','Send for Approval','Design','Production Drawing','BOM','Nesting']\"}]"
+  },
+  {
+   "card_name": "Completed Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "Completed Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"status\",\"operator\":\"=\",\"value\":\"Completed\"}]"
+  },
+  {
+   "card_name": "My Requests",
+   "chart": null,
+   "creation": "2025-01-31 10:00:00.000000",
+   "docstatus": 0,
+   "doctype": "Dashboard Card",
+   "idx": 0,
+   "modified": "2025-01-31 10:00:00.000000",
+   "modified_by": "Administrator",
+   "name": "My Requests",
+   "owner": "Administrator",
+   "type": "Number",
+   "filters_json": "[{\"field\":\"field\":\"assigned_to\",\"operator\":\"=\",\"value\":\"me\"}]"
+  }
+ ]
+} 
