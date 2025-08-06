@@ -1,3 +1,5 @@
+from __future__ import unicode_literals
+
 # -*- coding: utf-8 -*-
 # Copyright (c) 2025, AxelGear and contributors
 # For license information, please see license.txt
@@ -10,7 +12,6 @@ app_description = "Design Integration"
 app_email = "rejithr1995@gmail.com"
 app_license = "mit"
 
-from __future__ import unicode_literals
 import frappe
 from frappe import _
 
