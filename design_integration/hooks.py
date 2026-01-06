@@ -23,6 +23,9 @@ app_include_js = [
 # Include CSS files
 app_include_css = []
 
+## after migrate
+after_migrate = "design_integration.design_integration.custom_field.create_custom_fields_on_migrate"
+
 # DocType Events
 doc_events = {
 	# "Sales Order": {

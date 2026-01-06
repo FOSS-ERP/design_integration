@@ -253,14 +253,33 @@ def get_design_request_items(sales_order):
         items = []
         
         for idx, item in enumerate(sales_order_doc.items, 1):
+            item_group = frappe.get_value("Item", item.item_code, "item_group")
+            if item_group != "Fabricated Equipment":
+                continue
+
+            used_qty = frappe.db.sql("""
+                SELECT IFNULL(SUM(dri.qty), 0)
+                FROM `tabDesign Request Item Child` dri
+                INNER JOIN `tabDesign Request` dr
+                    ON dr.name = dri.parent
+                WHERE
+                    dr.sales_order = %s
+                    AND dri.so_detail = %s
+                    AND dr.docstatus < 2
+            """, (sales_order, item.name), as_dict=False)[0][0]
+
+            remaining_qty = item.qty - used_qty
+            if remaining_qty <= 0:
+                continue
+
             items.append({
                 "idx": idx,
                 "item_code": item.item_code,
                 "item_name": item.item_name,
                 "description": item.description or "",
-                "qty": item.qty,
+                "qty": remaining_qty,
                 "uom": item.uom,
-                "sales_order_item": item.name,
+                "so_detail": item.name,
                 "parent": sales_order
             })
         
@@ -270,11 +289,32 @@ def get_design_request_items(sales_order):
         frappe.log_error(f"Failed to get design request items: {str(e)}")
         frappe.throw(f"Failed to get design request items: {str(e)}")
 
+import json
+from frappe.utils import flt
 @frappe.whitelist()
 def create_design_request_from_sales_order(sales_order, selected_items=None):
     """Create a design request from sales order"""
     try:
         sales_order_doc = frappe.get_doc("Sales Order", sales_order)
+        selected_items = json.loads(selected_items)
+
+        used_map = frappe.db.sql("""
+            SELECT
+                dri.so_detail,
+                SUM(dri.qty) AS used_qty
+            FROM `tabDesign Request Item Child` dri
+            INNER JOIN `tabDesign Request` dr
+                ON dr.name = dri.parent
+            WHERE
+                dr.sales_order = %s
+                AND dr.docstatus < 2
+            GROUP BY dri.so_detail
+        """, sales_order, as_dict=True)
+
+        used_qty_map = {
+            row.so_detail: row.used_qty
+            for row in used_map
+        }
         
         # Create design request
         design_request = frappe.new_doc("Design Request")
@@ -287,32 +327,39 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
             project = frappe.get_doc("Project", sales_order_doc.project)
             design_request.project_name = project.project_name
         
-        # Add items
-        if selected_items:
-            selected_item_codes = [item.strip() for item in selected_items.split(",")]
-        else:
-            selected_item_codes = [item.item_code for item in sales_order_doc.items]
-        
-        frappe.logger().info(f"Selected item codes: {selected_item_codes}")
-        frappe.logger().info(f"Sales order items: {[item.item_code for item in sales_order_doc.items]}")
-        
-        # Add items to the design request
-        items_added = 0
-        for item in sales_order_doc.items:
-            if item.item_code in selected_item_codes:
-                frappe.logger().info(f"Adding item: {item.item_code}")
-                design_request.append("items", {
-                    "item_code": item.item_code,
-                    "item_name": item.item_name,
-                    "description": item.description,
-                    "qty": item.qty,
-                    "uom": item.uom,
-                    "design_status": "Pending"
-                })
-                items_added += 1
-        
-        frappe.logger().info(f"Items added to design request: {items_added}")
-        frappe.logger().info(f"Design request items before save: {len(design_request.items)}")
+        for row in selected_items:
+            requested_qty = flt(row.get("qty", 0))
+            if requested_qty <= 0:
+                continue
+
+            so_item = frappe.get_doc("Sales Order Item", row["so_detail"])
+
+            frappe.db.sql(
+                    "SELECT name FROM `tabSales Order Item` WHERE name = %s FOR UPDATE",
+                    so_item.name
+                )
+
+            used_qty = used_qty_map.get(so_item.name, 0)
+            remaining_qty = so_item.qty - used_qty
+
+            if requested_qty > remaining_qty:
+                frappe.throw(
+                    f"Requested qty {requested_qty} exceeds remaining qty {remaining_qty} "
+                    f"for item {so_item.item_code}"
+                )
+
+            design_request.append("items", {
+                "item_code": so_item.item_code,
+                "item_name": so_item.item_name,
+                "description": so_item.description,
+                "qty": requested_qty,
+                "uom": so_item.uom,
+                "design_status": "Pending",
+                "so_detail": so_item.name
+            })
+
+        if not design_request.items:
+            frappe.throw("No valid items to create Design Request")  
         
         # Save the design request (autoname will be called automatically)
         design_request.insert()

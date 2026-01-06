@@ -132,7 +132,7 @@ function make_design_request(frm) {
                             method: "design_integration.design_integration.doctype.design_request.design_request.create_design_request_from_sales_order",
                             args: {
                                 sales_order: frm.docname,
-                                selected_items: data.items.map(item => item.item_code).join(",")
+                                selected_items: data.items
                             },
                             freeze: true,
                             callback: function(r) {
