@@ -12,6 +12,16 @@ def create_custom_fields_on_migrate():
                 "hidden": 1
             }
         ],
+        "Work Order" : [
+            {
+                "fieldname" : "design_request_item",
+                "label" : "Design Request Item",
+                "fieldtype" : "Link",
+                "options" : "Design Request Item",
+                "insert_after" : "project",
+                "read_only": 1
+            }
+        ]
     }
 
     create_custom_fields(fields)

@@ -39,6 +39,7 @@
   "revision_count",
   "log_section",
   "stage_transition_log",
+  "section_break_jmoa",
   "design_request",
   "versions_tab",
   "version_view"
@@ -202,10 +203,10 @@
    "fieldtype": "Column Break"
   },
   {
-   "depends_on": "eval:doc.design_status == 'BOM'",
    "fieldname": "bom_name",
    "fieldtype": "Link",
    "label": "BOM Name",
+   "mandatory_depends_on": "eval:doc.design_status == 'BOM'",
    "options": "BOM"
   },
   {
@@ -271,10 +272,14 @@
   {
    "fieldname": "version_view",
    "fieldtype": "HTML"
+  },
+  {
+   "fieldname": "section_break_jmoa",
+   "fieldtype": "Section Break"
   }
  ],
  "links": [],
- "modified": "2026-01-07 16:06:24.760868",
+ "modified": "2026-01-20 21:26:24.654135",
  "modified_by": "Administrator",
  "module": "Design Integration",
  "name": "Design Request Item",
