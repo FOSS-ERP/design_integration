@@ -296,7 +296,10 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
     """Create a design request from sales order"""
     try:
         sales_order_doc = frappe.get_doc("Sales Order", sales_order)
-        selected_items = json.loads(selected_items)
+        try:
+            selected_items = json.loads(str(selected_items))
+        except:
+            selected_items = selected_items
 
         used_map = frappe.db.sql("""
             SELECT

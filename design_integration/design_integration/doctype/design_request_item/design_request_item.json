@@ -1,15 +1,10 @@
 {
  "actions": [],
  "allow_rename": 1,
- "creation": "2025-01-31 10:00:00.000000",
+ "creation": "2025-01-31 10:00:00",
  "doctype": "DocType",
  "engine": "InnoDB",
- "is_submittable": 0,
  "field_order": [
-  "item_code",
-  "item_name",
-  "new_item_code",
-  "new_item_name",
   "item_details_section",
   "item_code",
   "item_name",
@@ -44,9 +39,10 @@
   "revision_count",
   "log_section",
   "stage_transition_log",
-  "parent",
-  "parentfield",
-  "parenttype"
+  "section_break_jmoa",
+  "design_request",
+  "versions_tab",
+  "version_view"
  ],
  "fields": [
   {
@@ -57,31 +53,31 @@
   {
    "fieldname": "item_code",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "Item Code",
    "options": "Item",
-   "reqd": 1,
    "read_only": 1,
-   "in_list_view": 1
+   "reqd": 1
   },
   {
    "fieldname": "item_name",
    "fieldtype": "Data",
+   "in_list_view": 1,
    "label": "Item Name",
-   "read_only": 1,
-   "in_list_view": 1
+   "read_only": 1
   },
   {
    "fieldname": "qty",
    "fieldtype": "Float",
-   "label": "Quantity",
-   "in_list_view": 1
+   "in_list_view": 1,
+   "label": "Quantity"
   },
   {
    "fieldname": "uom",
    "fieldtype": "Link",
+   "in_list_view": 1,
    "label": "UOM",
-   "options": "UOM",
-   "in_list_view": 1
+   "options": "UOM"
   },
   {
    "fieldname": "column_break_1",
@@ -90,15 +86,14 @@
   {
    "fieldname": "description",
    "fieldtype": "Text Editor",
-   "label": "Description",
-   "in_list_view": 0
+   "label": "Description"
   },
   {
+   "default": "Syena Kitchenconceptz Manufacturing Private Limited",
    "fieldname": "company",
    "fieldtype": "Link",
    "label": "Company",
    "options": "Company",
-   "default": "Syena Kitchenconceptz Manufacturing Private Limited",
    "reqd": 1
   },
   {
@@ -107,20 +102,20 @@
    "label": "Status & Approval"
   },
   {
+   "default": "Pending",
    "fieldname": "design_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Design Status",
-   "default": "Pending",
-   "options": "Pending\nApproval Drawing\nSend for Approval\nDesign\nModelling\nProduction Drawing\nSKU Generation\nBOM\nNesting\nCompleted\nCancelled",
-   "in_list_view": 1
+   "options": "Pending\nApproval Drawing\nSend for Approval\nDesign\nModelling\nProduction Drawing\nSKU Generation\nBOM\nNesting\nCompleted\nCancelled"
   },
   {
+   "default": "Pending",
    "fieldname": "approval_status",
    "fieldtype": "Select",
+   "in_list_view": 1,
    "label": "Approval Status",
-   "default": "Pending",
-   "options": "Pending\nApproved\nRejected\nOn Hold\nRevised",
-   "in_list_view": 1
+   "options": "Pending\nApproved\nRejected\nOn Hold\nRevised"
   },
   {
    "fieldname": "column_break_2",
@@ -188,18 +183,20 @@
    "read_only": 1
   },
   {
+   "default": "0",
+   "depends_on": "eval:doc.new_item_code",
    "fieldname": "sku_generated",
    "fieldtype": "Check",
    "label": "SKU Generated",
-   "read_only": 1,
-   "depends_on": "eval:doc.new_item_code"
+   "read_only": 1
   },
   {
+   "default": "0",
+   "depends_on": "eval:doc.new_item_code",
    "fieldname": "item_created",
    "fieldtype": "Check",
    "label": "Item Created",
-   "read_only": 1,
-   "depends_on": "eval:doc.new_item_code"
+   "read_only": 1
   },
   {
    "fieldname": "column_break_4",
@@ -209,29 +206,32 @@
    "fieldname": "bom_name",
    "fieldtype": "Link",
    "label": "BOM Name",
-   "options": "BOM",
-   "depends_on": "eval:doc.design_status == 'BOM'"
+   "mandatory_depends_on": "eval:doc.design_status == 'BOM'",
+   "options": "BOM"
   },
   {
+   "default": "0",
+   "depends_on": "eval:doc.bom_name",
    "fieldname": "bom_created",
    "fieldtype": "Check",
    "label": "BOM Created",
-   "read_only": 1,
-   "depends_on": "eval:doc.bom_name"
+   "read_only": 1
   },
   {
+   "default": "0",
+   "depends_on": "eval:doc.design_status == 'Nesting'",
    "fieldname": "nesting_completed",
    "fieldtype": "Check",
    "label": "Nesting Completed",
-   "read_only": 1,
-   "depends_on": "eval:doc.design_status == 'Nesting'"
+   "read_only": 1
   },
   {
+   "default": "0",
+   "depends_on": "eval:['Modelling','Production Drawing','BOM','Nesting'].includes(doc.design_status)",
    "fieldname": "revision_requested",
    "fieldtype": "Check",
-   "label": "Revision Requested",
-   "depends_on": "eval:['Modelling','Production Drawing','BOM','Nesting'].includes(doc.design_status)",
-   "in_list_view": 1
+   "in_list_view": 1,
+   "label": "Revision Requested"
   },
   {
    "fieldname": "revision_reason",
@@ -239,11 +239,11 @@
    "label": "Revision Reason"
   },
   {
+   "default": "0",
    "fieldname": "revision_count",
    "fieldtype": "Int",
    "label": "Revision Count",
-   "read_only": 1,
-   "default": 0
+   "read_only": 1
   },
   {
    "fieldname": "log_section",
@@ -258,30 +258,33 @@
    "read_only": 1
   },
   {
-   "fieldname": "parent",
-   "fieldtype": "Data",
-   "hidden": 1
-  },
-  {
-   "fieldname": "parentfield",
-   "fieldtype": "Data",
-   "hidden": 1
-  },
-    {
-   "fieldname": "parenttype",
-   "fieldtype": "Data",
-   "hidden": 1
-  },
-  {
    "fieldname": "design_request",
    "fieldtype": "Link",
    "label": "Design Request",
    "options": "Design Request",
    "read_only": 1
+  },
+  {
+   "fieldname": "versions_tab",
+   "fieldtype": "Tab Break",
+   "label": "Versions"
+  },
+  {
+   "fieldname": "version_view",
+   "fieldtype": "HTML"
+  },
+  {
+   "fieldname": "section_break_jmoa",
+   "fieldtype": "Section Break"
   }
  ],
- "links": [],
- "modified": "2025-01-31 10:00:00.000000",
+ "links": [
+  {
+   "link_doctype": "Work Order",
+   "link_fieldname": "design_request_item"
+  }
+ ],
+ "modified": "2026-01-21 10:02:16.253139",
  "modified_by": "Administrator",
  "module": "Design Integration",
  "name": "Design Request Item",
@@ -296,63 +299,56 @@
    "read": 1,
    "report": 1,
    "role": "System Manager",
-   
    "share": 1,
    "write": 1
   },
   {
    "create": 1,
-   "delete": 0,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "Design Manager",
-   
    "share": 1,
    "write": 1
   },
   {
    "create": 1,
-   "delete": 0,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "Design User",
-   
    "share": 1,
    "write": 1
   },
   {
    "create": 1,
-   "delete": 0,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "Project Manager",
-   
    "share": 1,
    "write": 1
   },
   {
    "create": 1,
-   "delete": 0,
    "email": 1,
    "export": 1,
    "print": 1,
    "read": 1,
    "report": 1,
    "role": "Project User",
-   
    "share": 1,
    "write": 1
   }
  ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

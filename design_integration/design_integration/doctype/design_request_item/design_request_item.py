@@ -33,6 +33,7 @@ class DesignRequestItem(Document):
         """Validate Design Request Item"""
         self.validate_item()
         self.update_current_stage()
+        self.create_work_order()
     
     def on_update(self):
         """Handle updates"""
@@ -146,7 +147,27 @@ class DesignRequestItem(Document):
         # Handle nesting completion
         if self.design_status == "Nesting":
             self.nesting_completed = 1
-
+        
+    def create_work_order(self):
+        if frappe.db.exists("Work Order", {"design_request_item" : self.name}):
+            return
+        if self.design_status == "Completed" and self.bom_name:
+            variant_of = None
+            if variant_of := frappe.db.get_value("Item",self.new_item_code ,"variant_of"):
+                variant_of = variant_of
+            from erpnext.manufacturing.doctype.work_order.work_order import make_work_order
+            wo_doc = make_work_order(
+                self.bom_name,
+                self.new_item_code,
+                self.qty or 1,
+                variant_items = variant_of,
+                use_multi_level_bom=1
+            )
+            wo_doc.design_request_item = self.name
+            if self.design_request:
+                wo_doc.sales_order = frappe.db.get_value("Design Request", self.design_request, "sales_order")
+            wo_doc.save(ignore_permissions=True)
+            
 @frappe.whitelist()
 def update_design_status(docname, new_status):
     """Update design status from list view"""
@@ -172,3 +193,45 @@ def update_approval_status(docname, new_status):
     except Exception as e:
         frappe.log_error(f"Error updating approval status: {str(e)}")
         return {"success": False, "error": str(e)} 
+
+@frappe.whitelist()
+def get_version_meta_data():
+    return frappe.get_meta("Design Version")
+
+
+@frappe.whitelist()
+def get_version_list(design_request_item):
+    return frappe.get_all("Design Version", filters={"design_request_item" : design_request_item}, fields=[
+        "name", "posting_date", "version_tag", "new_version_file", "description"
+    ])
+
+
+
+@frappe.whitelist()
+def delete_version(version_name, design_request_item):
+    """Delete a design version"""
+    try:
+        # Check permissions
+        if not frappe.has_permission("Design Version", "delete"):
+            frappe.throw(_("You don't have permission to delete versions"))
+        
+        # Get the version
+        version = frappe.get_doc("Design Version", version_name)
+        
+        # Store reference before deleting
+        docname = version.name
+        
+        # Delete the document
+        frappe.delete_doc("Design Version", version_name, ignore_permissions=False)
+        
+        frappe.db.commit()
+        
+        return {
+            "success": True,
+            "message": _("Version deleted successfully"),
+            "deleted_docname": docname
+        }
+        
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "Design Version Deletion Error")
+        frappe.throw(_("Error deleting version: {0}").format(str(e)))
