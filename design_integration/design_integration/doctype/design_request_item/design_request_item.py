@@ -824,7 +824,7 @@ def _create_missing_item(design_item, row, is_assembly):
     item.insert()
     desired_item_code = _clean_text(row.get("source_part_no"))
     if desired_item_code and item.name != desired_item_code and not frappe.db.exists("Item", desired_item_code):
-        frappe.rename_doc("Item", item.name, desired_item_code, force=True, ignore_permissions=True)
+        frappe.rename_doc("Item", item.name, desired_item_code, force=True)
         item.name = desired_item_code
         frappe.db.set_value("Item", desired_item_code, "item_code", desired_item_code, update_modified=False)
     return item.name
