@@ -250,5 +250,11 @@ permissions = [
 ]
 
 # Add to apps screen
-add_to_apps_screen = 1
-
+add_to_apps_screen = [
+	{
+		"name": "design_integration",
+		"logo": "/assets/design_integration/images/design_integration.png",
+		"title": "Design Integration",
+		"route": "/app/design",
+	}
+]

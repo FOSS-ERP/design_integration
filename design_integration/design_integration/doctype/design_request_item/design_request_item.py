@@ -4,7 +4,14 @@ from frappe.model.document import Document
 from frappe.utils import now_datetime
 from frappe.utils import getdate
 from frappe.utils import now_datetime
+from frappe.utils import flt
 import frappe.model.naming
+import os
+import re
+import tempfile
+
+import requests
+from openpyxl import load_workbook
 
 class DesignRequestItem(Document):
     def autoname(self):
@@ -273,3 +280,673 @@ def get_next_version_tag(design_request_item):
         return base_version
     else:
         return f"{base_version}-{max(suffixes) + 1}"
+
+
+HEADER_ALIASES = {
+    "part_no": {"part no", "part number", "partno", "item code", "drawing no", "drawing number"},
+    "part_name": {"part name", "asm part name", "assembly name", "item name", "part number"},
+    "qty": {"qty", "quantity", "qty.", "required qty"},
+    "uom": {"uom", "unit", "units"},
+    "row_type": {"type", "part type", "asm part", "category", "description"},
+    "material": {"material"},
+    "sheet_metal_thickness": {"sheet metal thickness", "thickness", "sheet thickness"},
+    "mass": {"mass", "weight"},
+}
+
+SHEET_HINTS = ("SUB BOM", "BOM IMPORT", "BOM_IMPORT", "BOM")
+SUB_ASSEMBLY_RE = re.compile(r"sub\s*[- ]?\s*ass(?:y|embly)", re.IGNORECASE)
+
+
+@frappe.whitelist()
+def generate_bom_from_design_sheet(design_request_item: str):
+    """Create child Items, child BOMs and the FG BOM from the imported design workbook."""
+    result = {
+        "fg_item": None,
+        "fg_bom": None,
+        "items_created": [],
+        "items_reused": [],
+        "boms_created": [],
+        "boms_reused": [],
+        "warnings": [],
+    }
+
+    design_item = frappe.get_doc("Design Request Item", design_request_item)
+    _set_bom_import_state(design_item.name, "Processing", "BOM import started.")
+
+    try:
+        _validate_import_permissions(design_item)
+        fg_item_code = _get_finished_good_item_code(design_item)
+        workbook_path = _resolve_bom_workbook(design_item)
+        parsed = _parse_bom_workbook(workbook_path, fg_item_code)
+        result["fg_item"] = parsed["fg_item_code"]
+
+        _validate_bom_structure(design_item, parsed)
+        source_to_item, item_summary = _resolve_or_create_items(design_item, parsed)
+        result["items_created"].extend(item_summary["created"])
+        result["items_reused"].extend(item_summary["reused"])
+
+        assembly_boms, bom_summary = _create_bom_hierarchy(design_item, parsed, source_to_item)
+        result["boms_created"].extend(bom_summary["created"])
+        result["boms_reused"].extend(bom_summary["reused"])
+
+        final_fg_bom = assembly_boms["__fg__"]
+        final_bom_doc = frappe.get_doc("BOM", final_fg_bom)
+        if final_bom_doc.item != fg_item_code or final_bom_doc.docstatus != 1:
+            frappe.throw(_("Generated final BOM is not a submitted BOM for {0}.").format(fg_item_code))
+
+        design_item.db_set("bom_name", final_fg_bom, update_modified=False)
+        design_item.db_set("bom_created", 1, update_modified=False)
+        _set_bom_import_state(
+            design_item.name,
+            "Completed",
+            "Created FG BOM {0}. Created {1} Items and {2} BOMs. Reused {3} Items and {4} BOMs.".format(
+                final_fg_bom,
+                len(result["items_created"]),
+                len(result["boms_created"]),
+                len(result["items_reused"]),
+                len(result["boms_reused"]),
+            ),
+        )
+        result["fg_bom"] = final_fg_bom
+        return result
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "Design BOM Import Failed")
+        _set_bom_import_state(design_item.name, "Failed", frappe.get_traceback())
+        frappe.throw(_("BOM import failed. Check BOM Import Log or Error Log for details."))
+
+
+def _set_bom_import_state(design_item_name, status, log):
+    values = {}
+    meta = frappe.get_meta("Design Request Item")
+    if meta.has_field("custom_bom_import_status"):
+        values["custom_bom_import_status"] = status
+    if meta.has_field("custom_bom_import_log"):
+        values["custom_bom_import_log"] = log[-60000:] if log else ""
+    if values:
+        frappe.db.set_value("Design Request Item", design_item_name, values, update_modified=False)
+
+
+def _validate_import_permissions(design_item):
+    if not frappe.has_permission("Design Request Item", "write", doc=design_item):
+        frappe.throw(_("You need Write permission on Design Request Item."))
+    if not frappe.has_permission("BOM", "create"):
+        frappe.throw(_("You need Create permission on BOM."))
+    if not frappe.has_permission("BOM", "submit"):
+        frappe.throw(_("You need Submit permission on BOM."))
+
+
+def _get_finished_good_item_code(design_item):
+    return design_item.new_item_code or design_item.item_code
+
+
+def _resolve_bom_workbook(design_item):
+    file_value = (
+        getattr(design_item, "custom_bom_for_import", None)
+        or getattr(design_item, "custom_bom_importer", None)
+        or ""
+    ).strip()
+    if not file_value:
+        frappe.throw(_("Attach an Excel file or add a public Google Sheet link in BOM For Import."))
+
+    if "docs.google.com/spreadsheets" in file_value:
+        return _download_google_sheet(file_value)
+
+    file_url = file_value
+    file_doc_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    if file_doc_name:
+        file_doc = frappe.get_doc("File", file_doc_name)
+        file_path = file_doc.get_full_path()
+    else:
+        file_path = frappe.get_site_path(file_url.lstrip("/")) if file_url.startswith(("/files/", "/private/")) else file_url
+
+    if not os.path.exists(file_path):
+        frappe.throw(_("BOM import file was not found: {0}").format(file_value))
+    if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm"):
+        frappe.throw(_("Only .xlsx and .xlsm files are supported."))
+    return file_path
+
+
+def _download_google_sheet(url):
+    match = re.search(r"/spreadsheets/d/([^/]+)", url)
+    if not match:
+        frappe.throw(_("Invalid Google Sheets URL."))
+
+    export_url = f"https://docs.google.com/spreadsheets/d/{match.group(1)}/export?format=xlsx"
+    response = requests.get(export_url, timeout=30)
+    content_type = response.headers.get("content-type", "")
+    if response.status_code != 200 or "text/html" in content_type:
+        frappe.throw(_("The Google Sheet cannot be accessed. Make the sheet accessible through the link or upload the Excel file directly."))
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+    tmp.write(response.content)
+    tmp.close()
+    return tmp.name
+
+
+def _parse_bom_workbook(path, fg_item_code):
+    workbook = load_workbook(path, data_only=True, read_only=False, keep_links=False)
+    candidates = []
+    for sheet in workbook.worksheets:
+        if sheet.sheet_state != "visible":
+            continue
+        parsed = _parse_sheet(sheet)
+        if parsed["assemblies"]:
+            score = len(parsed["rows"])
+            if any(hint in sheet.title.upper() for hint in SHEET_HINTS):
+                score += 1000
+            candidates.append((score, sheet.title, parsed))
+
+    if not candidates:
+        frappe.throw(_("No SUB ASSY sections were found in the workbook."))
+
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    selected = candidates[0][2]
+    selected["fg_item_code"] = fg_item_code
+    selected["selected_sheet"] = candidates[0][1]
+    return selected
+
+
+def _parse_sheet(sheet):
+    header_row, columns = _detect_header(sheet)
+    if not header_row:
+        return {"assemblies": [], "rows": []}
+
+    assemblies = []
+    current = None
+    rows = []
+    for source_row, row in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=False), start=header_row + 1):
+        row_values = {key: _cell_value(row[index]) for key, index in columns.items() if index is not None and index < len(row)}
+        if not any(row_values.values()):
+            continue
+
+        part_no = _clean_text(row_values.get("part_no"))
+        part_name = _clean_text(row_values.get("part_name"))
+        qty = flt(row_values.get("qty"))
+        uom = _clean_text(row_values.get("uom"))
+        row_type = _clean_text(row_values.get("row_type"))
+        material = _clean_text(row_values.get("material"))
+        sheet_metal_thickness = _clean_text(row_values.get("sheet_metal_thickness"))
+        mass = flt(row_values.get("mass"))
+        rows.append(row_values)
+
+        if _is_sub_assembly_row(row_type, row_values):
+            current = {
+                "source_row": source_row,
+                "source_part_no": part_no,
+                "part_name": part_name,
+                "qty_in_fg": qty,
+                "uom": uom,
+                "row_type": row_type,
+                "material": material,
+                "sheet_metal_thickness": sheet_metal_thickness,
+                "mass": mass,
+                "components": [],
+            }
+            assemblies.append(current)
+            continue
+
+        if current:
+            current["components"].append({
+                "source_row": source_row,
+                "source_part_no": part_no,
+                "part_name": part_name,
+                "qty": qty,
+                "uom": uom,
+                "row_type": row_type,
+                "material": material,
+                "sheet_metal_thickness": sheet_metal_thickness,
+                "mass": mass,
+            })
+
+    return {"assemblies": assemblies, "rows": rows}
+
+
+def _detect_header(sheet):
+    best = (0, None, {})
+    max_row = sheet.max_row or 0
+    if max_row <= 0:
+        return None, {}
+    for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_row=min(max_row, 25), values_only=True), start=1):
+        normalized = [_normalize_header(value) for value in row]
+        columns = {key: None for key in HEADER_ALIASES}
+        score = 0
+        for idx, header in enumerate(normalized):
+            for key, aliases in HEADER_ALIASES.items():
+                if header in aliases and columns[key] is None:
+                    columns[key] = idx
+                    score += 1
+        if score > best[0] and (columns["part_no"] is not None or columns["part_name"] is not None) and columns["qty"] is not None:
+            best = (score, row_number, columns)
+    return best[1], best[2]
+
+
+def _normalize_header(value):
+    value = _clean_text(value).lower()
+    value = re.sub(r"[_/\-]+", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _cell_value(cell):
+    return cell.value if cell else None
+
+
+def _clean_text(value):
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _is_sub_assembly_row(row_type, row_values):
+    if row_type and SUB_ASSEMBLY_RE.search(row_type):
+        return True
+    # Some exports put the explicit SUB ASSY marker in another mapped column.
+    for value in row_values.values():
+        value = _clean_text(value)
+        if value and SUB_ASSEMBLY_RE.search(value):
+            return True
+    return False
+
+
+def _validate_bom_structure(design_item, parsed):
+    errors = []
+    fg_item_code = _get_finished_good_item_code(design_item)
+    if not design_item.name:
+        errors.append(_("Design Request Item is required."))
+    if not fg_item_code:
+        errors.append(_("Design Request Item must have Final Item Code."))
+    elif not frappe.db.exists("Item", fg_item_code):
+        errors.append(_("Finished Goods Item {0} does not exist.").format(fg_item_code))
+    if not design_item.company:
+        errors.append(_("Company is required."))
+    if not parsed["assemblies"]:
+        errors.append(_("At least one SUB ASSY section is required."))
+
+    seen = {}
+    for assembly in parsed["assemblies"]:
+        _validate_row_identity(assembly, "Sub-assembly", errors)
+        if flt(assembly["qty_in_fg"]) <= 0:
+            errors.append(_("Row {0}: sub-assembly quantity must be greater than zero.").format(assembly["source_row"]))
+        if assembly["source_part_no"] == fg_item_code:
+            errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(assembly["source_row"]))
+        _track_duplicate_source(assembly, seen, errors)
+        for component in assembly["components"]:
+            _validate_row_identity(component, "Component", errors)
+            if flt(component["qty"]) <= 0:
+                errors.append(_("Row {0}: component quantity must be greater than zero.").format(component["source_row"]))
+            if component["source_part_no"] == assembly["source_part_no"]:
+                errors.append(_("Row {0}: assembly cannot contain itself.").format(component["source_row"]))
+            if component["source_part_no"] == fg_item_code:
+                errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(component["source_row"]))
+            _track_duplicate_source(component, seen, errors)
+
+    graph = _build_dependency_graph(parsed)
+    cycle = _find_cycle(graph)
+    if cycle:
+        errors.append(_("Circular assembly dependency detected: {0}").format(" -> ".join(cycle)))
+
+    if errors:
+        _set_bom_import_state(design_item.name, "Validation Failed", "\n".join(errors))
+        frappe.throw("<br>".join(errors))
+
+
+def _validate_row_identity(row, label, errors):
+    if not row.get("source_part_no") and not row.get("part_name"):
+        errors.append(_("{0} row {1}: Part Number or Part Name is required.").format(label, row.get("source_row")))
+
+
+def _track_duplicate_source(row, seen, errors):
+    part_no = row.get("source_part_no")
+    if not part_no:
+        return
+    signature = (_clean_text(row.get("part_name")).lower(), _clean_text(row.get("uom")).lower())
+    if part_no in seen and seen[part_no] != signature:
+        errors.append(_("Part Number {0} has conflicting descriptions or UOMs.").format(part_no))
+    seen.setdefault(part_no, signature)
+
+
+def _build_dependency_graph(parsed):
+    assembly_sources = {assembly["source_part_no"] for assembly in parsed["assemblies"] if assembly["source_part_no"]}
+    graph = {source: set() for source in assembly_sources}
+    for assembly in parsed["assemblies"]:
+        parent = assembly["source_part_no"]
+        if not parent:
+            continue
+        for component in assembly["components"]:
+            child = component["source_part_no"]
+            if child in assembly_sources:
+                graph[parent].add(child)
+    return graph
+
+
+def _find_cycle(graph):
+    visited = set()
+    stack = []
+    active = set()
+
+    def visit(node):
+        if node in active:
+            return stack[stack.index(node):] + [node]
+        if node in visited:
+            return None
+        active.add(node)
+        stack.append(node)
+        for child in graph.get(node, []):
+            cycle = visit(child)
+            if cycle:
+                return cycle
+        stack.pop()
+        active.remove(node)
+        visited.add(node)
+        return None
+
+    for node in graph:
+        cycle = visit(node)
+        if cycle:
+            return cycle
+    return None
+
+
+def _resolve_or_create_items(design_item, parsed):
+    source_to_item = {}
+    mapped_keys = set()
+    summary = {"created": [], "reused": []}
+    rows = []
+    for assembly in parsed["assemblies"]:
+        rows.append((assembly, True))
+        rows.extend((component, False) for component in assembly["components"])
+
+    for row, is_assembly in rows:
+        key = row.get("source_part_no") or row.get("part_name")
+        if key in source_to_item:
+            if key in mapped_keys:
+                row["mapped_item_code"] = source_to_item[key]
+            continue
+        if not is_assembly:
+            item_code = _find_mapped_item(row)
+            if item_code:
+                row["mapped_item_code"] = item_code
+                source_to_item[key] = item_code
+                mapped_keys.add(key)
+                summary["reused"].append(item_code)
+                continue
+        item_code = _find_existing_item(row)
+        if item_code:
+            source_to_item[key] = item_code
+            summary["reused"].append(item_code)
+            continue
+        if not frappe.has_permission("Item", "create"):
+            frappe.throw(_("You need Create permission on Item to create missing child Items."))
+        item_code = _create_missing_item(design_item, row, is_assembly)
+        source_to_item[key] = item_code
+        summary["created"].append(item_code)
+    return source_to_item, summary
+
+
+def _find_mapped_item(row):
+    description = _normalize_mapping_value(row.get("row_type"))
+    thickness = _normalize_thickness(row.get("sheet_metal_thickness"))
+    material = _normalize_mapping_value(row.get("material"))
+    if not description or not thickness:
+        return None
+
+    mappings = frappe.get_all(
+        "Design BOM Item Mapping",
+        filters={"enabled": 1},
+        fields=["sheet_description", "sheet_metal_thickness", "material", "erp_item", "priority"],
+        order_by="priority desc, modified desc",
+    )
+    matches = []
+    has_description_mapping = False
+    for mapping in mappings:
+        mapped_description = _normalize_mapping_value(mapping.get("sheet_description"))
+        if mapped_description != description:
+            continue
+        has_description_mapping = True
+        if _normalize_thickness(mapping.get("sheet_metal_thickness")) != thickness:
+            continue
+        mapped_material = _normalize_mapping_value(mapping.get("material"))
+        if mapped_material and mapped_material != material:
+            continue
+        matches.append(mapping)
+
+    if matches:
+        matches.sort(
+            key=lambda mapping: (
+                1 if _normalize_mapping_value(mapping.get("material")) else 0,
+                mapping.get("priority") or 0,
+            ),
+            reverse=True,
+        )
+        return matches[0].get("erp_item")
+
+    if has_description_mapping:
+        frappe.throw(
+            _("Row {0}: No Design BOM Item Mapping found for DESCRIPTION {1}, Sheet Metal Thickness {2}, Material {3}.").format(
+                row.get("source_row"),
+                row.get("row_type"),
+                row.get("sheet_metal_thickness"),
+                row.get("material") or "-",
+            )
+        )
+    return None
+
+
+def _normalize_mapping_value(value):
+    return re.sub(r"\s+", " ", _clean_text(value)).strip().lower()
+
+
+def _normalize_thickness(value):
+    value = _clean_text(value)
+    if not value or value == "---":
+        return ""
+    numeric_value = flt(value)
+    if numeric_value:
+        return f"{numeric_value:g}"
+    return _normalize_mapping_value(value)
+
+
+def _find_existing_item(row):
+    source_part_no = row.get("source_part_no")
+    if source_part_no and frappe.db.exists("Item", source_part_no):
+        return source_part_no
+
+    engineering_field = _get_engineering_reference_field()
+    if engineering_field and source_part_no:
+        return frappe.db.get_value("Item", {engineering_field: source_part_no}, "name")
+    return None
+
+
+def _get_engineering_reference_field():
+    meta = frappe.get_meta("Item")
+    for fieldname in ("custom_part_no", "custom_part_number", "custom_drawing_no", "drawing_no", "drawing_number", "part_number"):
+        if meta.has_field(fieldname):
+            return fieldname
+    return None
+
+
+def _create_missing_item(design_item, row, is_assembly):
+    uom = row.get("uom") or design_item.uom
+    if not uom:
+        frappe.throw(_("Row {0}: UOM is required to create missing Item.").format(row.get("source_row")))
+    if not frappe.db.exists("UOM", uom):
+        frappe.throw(_("Row {0}: UOM {1} does not exist.").format(row.get("source_row"), uom))
+
+    item = frappe.new_doc("Item")
+    item.item_name = row.get("part_name") or row.get("source_part_no")
+    item.description = row.get("part_name") or row.get("source_part_no")
+    item.item_group = _get_default_item_group(design_item, is_assembly)
+    item.stock_uom = uom
+    item.is_stock_item = 1
+    if frappe.get_meta("Item").has_field("gst_hsn_code"):
+        hsn_code = frappe.db.get_value("Item", _get_finished_good_item_code(design_item), "gst_hsn_code")
+        if hsn_code:
+            item.gst_hsn_code = hsn_code
+
+    engineering_field = _get_engineering_reference_field()
+    if engineering_field and row.get("source_part_no"):
+        item.set(engineering_field, row.get("source_part_no"))
+
+    item.insert()
+    return item.name
+
+
+def _get_default_item_group(design_item, is_assembly):
+    fg_item_code = _get_finished_good_item_code(design_item)
+    if fg_item_code:
+        item_group = frappe.db.get_value("Item", fg_item_code, "item_group")
+        if item_group:
+            return item_group
+    if frappe.db.exists("Item Group", "Products"):
+        return "Products"
+    frappe.throw(_("No default Item Group found for generated Items."))
+
+
+def _create_bom_hierarchy(design_item, parsed, source_to_item):
+    graph = _build_dependency_graph(parsed)
+    assembly_map = {assembly["source_part_no"]: assembly for assembly in parsed["assemblies"] if assembly["source_part_no"]}
+    assembly_boms = {}
+    summary = {"created": [], "reused": []}
+
+    def build_for(source):
+        if source in assembly_boms:
+            return assembly_boms[source]
+        for child in graph.get(source, []):
+            build_for(child)
+
+        assembly = assembly_map[source]
+        item_code = source_to_item[source]
+        rows = []
+        for component in assembly["components"]:
+            component_key = component.get("source_part_no") or component.get("part_name")
+            component_item = source_to_item[component_key]
+            child_bom = assembly_boms.get(component.get("source_part_no"))
+            rows.append(_make_bom_row(component_item, _get_component_bom_qty(component, child_bom), component.get("uom"), child_bom, component.get("source_row")))
+        rows = _combine_bom_rows(rows)
+
+        bom_name, reused = _get_or_create_submitted_bom(
+            item_code=item_code,
+            company=design_item.company,
+            quantity=1,
+            rows=rows,
+            is_default=0,
+        )
+        assembly_boms[source] = bom_name
+        summary["reused" if reused else "created"].append(bom_name)
+        return bom_name
+
+    child_sources = {child for children in graph.values() for child in children}
+    top_level_sources = [assembly["source_part_no"] for assembly in parsed["assemblies"] if assembly["source_part_no"] not in child_sources]
+    for source in top_level_sources:
+        build_for(source)
+
+    fg_rows = []
+    for source in top_level_sources:
+        assembly = assembly_map[source]
+        item_code = source_to_item[source]
+        fg_rows.append(_make_bom_row(item_code, assembly["qty_in_fg"], assembly.get("uom"), assembly_boms[source], assembly.get("source_row")))
+    fg_rows = _combine_bom_rows(fg_rows)
+
+    fg_bom, reused = _get_or_create_submitted_bom(
+        item_code=_get_finished_good_item_code(design_item),
+        company=design_item.company,
+        quantity=1,
+        rows=fg_rows,
+        is_default=1,
+    )
+    assembly_boms["__fg__"] = fg_bom
+    summary["reused" if reused else "created"].append(fg_bom)
+    return assembly_boms, summary
+
+
+def _get_component_bom_qty(component, child_bom):
+    qty = flt(component.get("qty"))
+    if child_bom:
+        return qty
+    if component.get("mapped_item_code") and _normalize_mapping_value(component.get("uom")) in {"kg", "kgs", "kilogram", "kilograms"}:
+        mass = flt(component.get("mass"))
+        if mass > 0:
+            return mass * qty
+    return qty
+
+
+def _make_bom_row(item_code, qty, source_uom, child_bom, source_row):
+    stock_uom = frappe.db.get_value("Item", item_code, "stock_uom")
+    conversion_factor = _get_conversion_factor(item_code, source_uom, stock_uom, source_row)
+    return {
+        "item_code": item_code,
+        "qty": flt(qty),
+        "uom": source_uom or stock_uom,
+        "stock_uom": stock_uom,
+        "conversion_factor": conversion_factor,
+        "bom_no": child_bom,
+    }
+
+
+def _combine_bom_rows(rows):
+    combined = {}
+    for row in rows:
+        key = (
+            row.get("item_code"),
+            row.get("uom"),
+            row.get("stock_uom"),
+            flt(row.get("conversion_factor")),
+            row.get("bom_no") or None,
+        )
+        if key not in combined:
+            combined[key] = dict(row)
+            continue
+        combined[key]["qty"] = flt(combined[key].get("qty")) + flt(row.get("qty"))
+    return list(combined.values())
+
+
+def _get_conversion_factor(item_code, source_uom, stock_uom, source_row):
+    if not source_uom or source_uom == stock_uom:
+        return 1
+    factor = frappe.db.get_value("UOM Conversion Detail", {"parent": item_code, "uom": source_uom}, "conversion_factor")
+    if not factor:
+        frappe.throw(_("Row {0}: UOM {1} does not match Stock UOM {2} for Item {3}, and no conversion exists.").format(source_row, source_uom, stock_uom, item_code))
+    return flt(factor)
+
+
+def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=0):
+    existing_boms = frappe.get_all(
+        "BOM",
+        filters={"item": item_code, "company": company, "docstatus": ["in", [0, 1]]},
+        fields=["name", "docstatus"],
+        order_by="docstatus desc, modified desc",
+    )
+    target_signature = _bom_signature(rows)
+    for existing in existing_boms:
+        bom = frappe.get_doc("BOM", existing.name)
+        if _bom_signature(bom.items) == target_signature:
+            if bom.docstatus == 0:
+                bom.submit()
+            return bom.name, True
+
+    bom = frappe.new_doc("BOM")
+    bom.item = item_code
+    bom.company = company
+    bom.quantity = quantity
+    bom.is_active = 1
+    bom.is_default = is_default
+    for row in rows:
+        bom.append("items", row)
+    bom.insert()
+    bom.submit()
+    if is_default:
+        frappe.db.set_value("Item", item_code, "default_bom", bom.name, update_modified=False)
+    return bom.name, False
+
+
+def _bom_signature(rows):
+    signature = []
+    for row in rows:
+        get = row.get if hasattr(row, "get") else lambda key: getattr(row, key, None)
+        signature.append((
+            get("item_code"),
+            flt(get("qty")),
+            get("uom"),
+            get("bom_no") or None,
+        ))
+    return sorted(signature)

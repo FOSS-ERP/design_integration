@@ -4,6 +4,7 @@ frappe.ui.form.on("Design Request Item", {
         
         // Add custom buttons
         addCustomButtons(frm);
+        addBomImportButton(frm);
 
         // Enforce allowed design_status options based on approval_status
         enforceDesignStatusOptions(frm);
@@ -483,6 +484,84 @@ function addCustomButtons(frm) {
     frm.add_custom_button(__('Mark Revision'), function() {
         showRevisionDialog(frm);
     }, __('Actions'));
+}
+
+function addBomImportButton(frm) {
+    const is_bom_stage = [frm.doc.design_status, frm.doc.current_stage].includes('BOM');
+    if (frm.is_new() || !is_bom_stage) {
+        return;
+    }
+
+    frm.add_custom_button(__('Generate BOM from Sheet'), function() {
+        generateBomFromSheet(frm);
+    }, __('Actions'));
+
+    addBomImportFieldButton(frm);
+}
+
+function addBomImportFieldButton(frm) {
+    const fieldname = frm.fields_dict.custom_bom_importer ? 'custom_bom_importer' : 'custom_bom_for_import';
+    const field = frm.fields_dict[fieldname];
+    if (!field || !field.$wrapper) {
+        return;
+    }
+
+    field.$wrapper.find('.generate-bom-from-sheet-inline').remove();
+    const $button = $(`
+        <button class="btn btn-xs btn-primary generate-bom-from-sheet-inline" style="margin-top: 8px;">
+            ${__('Generate BOM from Sheet')}
+        </button>
+    `);
+    $button.on('click', function() {
+        generateBomFromSheet(frm);
+    });
+    field.$wrapper.append($button);
+}
+
+function generateBomFromSheet(frm) {
+    const bom_import_file = frm.doc.custom_bom_for_import || frm.doc.custom_bom_importer;
+    const missing = [];
+    if (!frm.doc.new_item_code) {
+        missing.push(__('Final Item Code'));
+    }
+    if (!frm.doc.item_created) {
+        missing.push(__('Item Created'));
+    }
+    if (!bom_import_file) {
+        missing.push(__('BOM Import Sheet'));
+    }
+    if (missing.length) {
+        frappe.msgprint({
+            title: __('Cannot Generate BOM'),
+            message: __('Please complete these fields first: {0}', [missing.join(', ')]),
+            indicator: 'orange'
+        });
+        return;
+    }
+
+    frappe.confirm(
+        __('This will create missing child Items and generate all child and parent BOMs. Continue?'),
+        function() {
+            frappe.call({
+                method: 'design_integration.design_integration.doctype.design_request_item.design_request_item.generate_bom_from_design_sheet',
+                args: {
+                    design_request_item: frm.doc.name
+                },
+                freeze: true,
+                freeze_message: __('Generating child Items and BOM structure...'),
+                callback: function(r) {
+                    if (!r.exc && r.message) {
+                        frappe.msgprint({
+                            title: __('BOM Generated'),
+                            message: __('Finished Goods BOM: {0}', [r.message.fg_bom]),
+                            indicator: 'green'
+                        });
+                        frm.reload_doc();
+                    }
+                }
+            });
+        }
+    );
 }
 
 function createTwoColumnLayout(frm) {
