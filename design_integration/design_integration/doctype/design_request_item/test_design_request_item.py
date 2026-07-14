@@ -45,9 +45,9 @@ class TestDesignRequestItem(TestCase):
 			[None, "Item Code", "UOM"],
 			[None, "FG-001", "Nos"],
 			[],
-			["ITEM NO.", "PART NUMBER.", "", "PART DESCRIPTION", "DESCRIPTION", "UOM", "Sheet Metal Thickness", "Mass", "QTY.", "GROSS WEIGHT"],
-			[1, "SKIRTING ASM", "", "SKIRTING ASM", "SUB ASSY", "Nos", "", "", 1, ""],
-			[None, "PANEL-001", "RM-001", "FRONT SKIRTING PANEL", "Sheet", "Kg", 1, 2.03, 2, 2.62],
+			["ITEM NO.", "PART NUMBER.", "", "PART DESCRIPTION", "DESCRIPTION", "Bounding Box Length", "Bounding Box Width", "MATERIAL", "Sheet Metal Thickness", "Mass", "QTY.", "GROSS WEIGHT"],
+			[1, "SKIRTING ASM", "", "SKIRTING ASM", "SUB ASSY", "", "", "", "", "", 1, ""],
+			[None, "PANEL-001", "RM-001", "FRONT SKIRTING PANEL", "Sheet", 1410, 185.79, "AISI430 #4", 1, 2.03, 2, 2.62],
 		])
 
 		parsed = dri._parse_bom_workbook(path, "FG-001")
@@ -57,6 +57,7 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["part_name"], "FRONT SKIRTING PANEL")
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["erp_item_code"], "RM-001")
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["gross_weight"], 2.62)
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["bounding_box_length"], 1410)
 
 	def test_nested_assembly_graph_uses_exact_part_number(self):
 		parsed = {
@@ -164,11 +165,14 @@ class TestDesignRequestItem(TestCase):
 							"row_type": "Sheet",
 							"sheet_metal_thickness": "1",
 							"material": "AISI430 #4",
+							"bounding_box_length": 1410,
+							"bounding_box_width": 185.79,
 							"qty": 2,
 							"uom": "Kg",
 							"mass": 2.03,
 							"gross_weight": 2.62,
 							"raw_material_item_code": "RM-SHEET-1MM",
+							"raw_material_density": 8,
 							"source_row": 2,
 						},
 						{
@@ -177,11 +181,14 @@ class TestDesignRequestItem(TestCase):
 							"row_type": "Sheet",
 							"sheet_metal_thickness": "1",
 							"material": "AISI430 #4",
+							"bounding_box_length": 669.3,
+							"bounding_box_width": 185.79,
 							"qty": 2,
 							"uom": "Kg",
 							"mass": 0.95,
 							"gross_weight": 1.243,
 							"raw_material_item_code": "RM-SHEET-1MM",
+							"raw_material_density": 8,
 							"source_row": 3,
 						},
 					],
@@ -205,9 +212,15 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertEqual(created_for, ["SF-PANEL-1", "SF-PANEL-2", "ITEM-MAIN", "FG-001"])
 		self.assertEqual(captured_rows["SF-PANEL-1"][0]["item_code"], "RM-SHEET-1MM")
-		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 2.62)
+		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 4.1914224)
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
+
+	def test_clean_text_extracts_markdown_link_label(self):
+		self.assertEqual(
+			dri._clean_text("[**P-SY-SA-0001-SQ-2-40-40-810**](http://site2.local/item)"),
+			"P-SY-SA-0001-SQ-2-40-40-810",
+		)
 
 	def test_final_fg_bom_signature_links_to_design_item_code(self):
 		row = dri._bom_signature([{"item_code": "FG-001", "qty": 1, "uom": "Nos", "bom_no": "BOM-SA"}])

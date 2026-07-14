@@ -292,6 +292,8 @@ HEADER_ALIASES = {
     "uom": {"uom", "unit", "units"},
     "row_type": {"type", "part type", "asm part", "category", "description"},
     "material": {"material"},
+    "bounding_box_length": {"bounding box length", "length"},
+    "bounding_box_width": {"bounding box width", "width"},
     "sheet_metal_thickness": {"sheet metal thickness", "thickness", "sheet thickness"},
     "mass": {"mass", "weight"},
     "gross_weight": {"gross weight", "gross wt", "gross weight."},
@@ -484,6 +486,8 @@ def _parse_table_rows(table):
         uom = _clean_text(row_values.get("uom"))
         row_type = _clean_text(row_values.get("row_type"))
         material = _clean_text(row_values.get("material"))
+        bounding_box_length = flt(row_values.get("bounding_box_length"))
+        bounding_box_width = flt(row_values.get("bounding_box_width"))
         sheet_metal_thickness = _clean_text(row_values.get("sheet_metal_thickness"))
         mass = flt(row_values.get("mass"))
         gross_weight = flt(row_values.get("gross_weight"))
@@ -499,6 +503,8 @@ def _parse_table_rows(table):
                 "uom": uom,
                 "row_type": row_type,
                 "material": material,
+                "bounding_box_length": bounding_box_length,
+                "bounding_box_width": bounding_box_width,
                 "sheet_metal_thickness": sheet_metal_thickness,
                 "mass": mass,
                 "gross_weight": gross_weight,
@@ -517,6 +523,8 @@ def _parse_table_rows(table):
                 "uom": uom,
                 "row_type": row_type,
                 "material": material,
+                "bounding_box_length": bounding_box_length,
+                "bounding_box_width": bounding_box_width,
                 "sheet_metal_thickness": sheet_metal_thickness,
                 "mass": mass,
                 "gross_weight": gross_weight,
@@ -558,7 +566,11 @@ def _normalize_header(value):
 def _clean_text(value):
     if value is None:
         return ""
-    return str(value).strip()
+    value = str(value).strip()
+    markdown_link = re.match(r"^\[([^\]]+)\]\([^)]+\)$", value)
+    if markdown_link:
+        value = markdown_link.group(1)
+    return value.replace("**", "").strip()
 
 
 def _is_sub_assembly_row(row_type, row_values):
@@ -684,9 +696,10 @@ def _resolve_or_create_items(design_item, parsed):
         if key in source_to_item:
             continue
         if not is_assembly:
-            raw_material_item = _find_mapped_item(row)
-            if raw_material_item:
-                row["raw_material_item_code"] = raw_material_item
+            mapping = _find_mapped_item(row)
+            if mapping:
+                row["raw_material_item_code"] = mapping.get("erp_item")
+                row["raw_material_density"] = flt(mapping.get("material_density"))
         item_code = _find_existing_item(row)
         if item_code:
             source_to_item[key] = item_code
@@ -710,7 +723,7 @@ def _find_mapped_item(row):
     mappings = frappe.get_all(
         "Design BOM Item Mapping",
         filters={"enabled": 1},
-        fields=["sheet_description", "sheet_metal_thickness", "material", "erp_item", "priority"],
+        fields=["sheet_description", "sheet_metal_thickness", "material", "material_density", "erp_item", "priority"],
         order_by="priority desc, modified desc",
     )
     matches = []
@@ -735,7 +748,7 @@ def _find_mapped_item(row):
             ),
             reverse=True,
         )
-        return matches[0].get("erp_item")
+        return matches[0]
 
     if has_description_mapping:
         frappe.throw(
@@ -809,6 +822,11 @@ def _create_missing_item(design_item, row, is_assembly):
         item.set(engineering_field, row.get("source_part_no"))
 
     item.insert()
+    desired_item_code = _clean_text(row.get("source_part_no"))
+    if desired_item_code and item.name != desired_item_code and not frappe.db.exists("Item", desired_item_code):
+        frappe.rename_doc("Item", item.name, desired_item_code, force=True, ignore_permissions=True)
+        item.name = desired_item_code
+        frappe.db.set_value("Item", desired_item_code, "item_code", desired_item_code, update_modified=False)
     return item.name
 
 
@@ -901,9 +919,9 @@ def _create_sheet_component_bom(design_item, item_code, component):
     raw_material_item = component.get("raw_material_item_code")
     if not raw_material_item:
         return None, True
-    raw_qty = flt(component.get("gross_weight")) or (flt(component.get("mass")) * flt(component.get("qty")))
+    raw_qty = _get_sheet_raw_material_qty(component)
     if raw_qty <= 0:
-        frappe.throw(_("Row {0}: Gross Weight is required for sheet raw material BOM.").format(component.get("source_row")))
+        frappe.throw(_("Row {0}: Raw material quantity could not be calculated for sheet BOM.").format(component.get("source_row")))
     raw_stock_uom = frappe.db.get_value("Item", raw_material_item, "stock_uom")
     rows = [_make_bom_row(raw_material_item, raw_qty, raw_stock_uom, None, component.get("source_row"))]
     return _get_or_create_submitted_bom(
@@ -913,6 +931,17 @@ def _create_sheet_component_bom(design_item, item_code, component):
         rows=rows,
         is_default=1,
     )
+
+
+def _get_sheet_raw_material_qty(component):
+    density = flt(component.get("raw_material_density"))
+    length = flt(component.get("bounding_box_length"))
+    width = flt(component.get("bounding_box_width"))
+    thickness = flt(component.get("sheet_metal_thickness"))
+    qty = flt(component.get("qty")) or 1
+    if density > 0 and length > 0 and width > 0 and thickness > 0:
+        return (length * width * thickness * density / 1000000) * qty
+    return flt(component.get("gross_weight")) or (flt(component.get("mass")) * qty)
 
 
 def _get_default_bom(item_code, company=None):
