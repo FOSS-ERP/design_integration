@@ -6,6 +6,7 @@ from frappe.utils import getdate
 from frappe.utils import now_datetime
 from frappe.utils import flt
 import frappe.model.naming
+import csv
 import os
 import re
 import tempfile
@@ -284,13 +285,16 @@ def get_next_version_tag(design_request_item):
 
 HEADER_ALIASES = {
     "part_no": {"part no", "part number", "partno", "item code", "drawing no", "drawing number"},
-    "part_name": {"part name", "asm part name", "assembly name", "item name", "part number"},
+    "erp_item_code": {"erp item", "erp item code", "existing item", "existing item code"},
+    "part_name": {"part name", "asm part name", "assembly name", "item name"},
+    "part_description": {"part description", "description name"},
     "qty": {"qty", "quantity", "qty.", "required qty"},
     "uom": {"uom", "unit", "units"},
     "row_type": {"type", "part type", "asm part", "category", "description"},
     "material": {"material"},
     "sheet_metal_thickness": {"sheet metal thickness", "thickness", "sheet thickness"},
     "mass": {"mass", "weight"},
+    "gross_weight": {"gross weight", "gross wt", "gross weight."},
 }
 
 SHEET_HINTS = ("SUB BOM", "BOM IMPORT", "BOM_IMPORT", "BOM")
@@ -401,8 +405,8 @@ def _resolve_bom_workbook(design_item):
 
     if not os.path.exists(file_path):
         frappe.throw(_("BOM import file was not found: {0}").format(file_value))
-    if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm"):
-        frappe.throw(_("Only .xlsx and .xlsm files are supported."))
+    if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm", ".csv"):
+        frappe.throw(_("Only .xlsx, .xlsm and .csv files are supported."))
     return file_path
 
 
@@ -424,6 +428,15 @@ def _download_google_sheet(url):
 
 
 def _parse_bom_workbook(path, fg_item_code):
+    if os.path.splitext(path)[1].lower() == ".csv":
+        with open(path, newline="", encoding="utf-8-sig") as csv_file:
+            parsed = _parse_table_rows(list(csv.reader(csv_file)))
+        if not parsed["assemblies"]:
+            frappe.throw(_("No SUB ASSY sections were found in the CSV file."))
+        parsed["fg_item_code"] = fg_item_code
+        parsed["selected_sheet"] = os.path.basename(path)
+        return parsed
+
     workbook = load_workbook(path, data_only=True, read_only=False, keep_links=False)
     candidates = []
     for sheet in workbook.worksheets:
@@ -447,32 +460,40 @@ def _parse_bom_workbook(path, fg_item_code):
 
 
 def _parse_sheet(sheet):
-    header_row, columns = _detect_header(sheet)
+    table = [[cell.value for cell in row] for row in sheet.iter_rows(values_only=False)]
+    return _parse_table_rows(table)
+
+
+def _parse_table_rows(table):
+    header_row, columns = _detect_header(table)
     if not header_row:
         return {"assemblies": [], "rows": []}
 
     assemblies = []
     current = None
     rows = []
-    for source_row, row in enumerate(sheet.iter_rows(min_row=header_row + 1, values_only=False), start=header_row + 1):
-        row_values = {key: _cell_value(row[index]) for key, index in columns.items() if index is not None and index < len(row)}
+    for source_row, row in enumerate(table[header_row:], start=header_row + 1):
+        row_values = {key: row[index] for key, index in columns.items() if index is not None and index < len(row)}
         if not any(row_values.values()):
             continue
 
         part_no = _clean_text(row_values.get("part_no"))
-        part_name = _clean_text(row_values.get("part_name"))
+        part_name = _clean_text(row_values.get("part_description")) or _clean_text(row_values.get("part_name")) or part_no
+        erp_item_code = _clean_text(row_values.get("erp_item_code"))
         qty = flt(row_values.get("qty"))
         uom = _clean_text(row_values.get("uom"))
         row_type = _clean_text(row_values.get("row_type"))
         material = _clean_text(row_values.get("material"))
         sheet_metal_thickness = _clean_text(row_values.get("sheet_metal_thickness"))
         mass = flt(row_values.get("mass"))
+        gross_weight = flt(row_values.get("gross_weight"))
         rows.append(row_values)
 
         if _is_sub_assembly_row(row_type, row_values):
             current = {
                 "source_row": source_row,
                 "source_part_no": part_no,
+                "erp_item_code": erp_item_code,
                 "part_name": part_name,
                 "qty_in_fg": qty,
                 "uom": uom,
@@ -480,6 +501,7 @@ def _parse_sheet(sheet):
                 "material": material,
                 "sheet_metal_thickness": sheet_metal_thickness,
                 "mass": mass,
+                "gross_weight": gross_weight,
                 "components": [],
             }
             assemblies.append(current)
@@ -489,6 +511,7 @@ def _parse_sheet(sheet):
             current["components"].append({
                 "source_row": source_row,
                 "source_part_no": part_no,
+                "erp_item_code": erp_item_code,
                 "part_name": part_name,
                 "qty": qty,
                 "uom": uom,
@@ -496,17 +519,17 @@ def _parse_sheet(sheet):
                 "material": material,
                 "sheet_metal_thickness": sheet_metal_thickness,
                 "mass": mass,
+                "gross_weight": gross_weight,
             })
 
     return {"assemblies": assemblies, "rows": rows}
 
 
-def _detect_header(sheet):
+def _detect_header(table):
     best = (0, None, {})
-    max_row = sheet.max_row or 0
-    if max_row <= 0:
+    if not table:
         return None, {}
-    for row_number, row in enumerate(sheet.iter_rows(min_row=1, max_row=min(max_row, 25), values_only=True), start=1):
+    for row_number, row in enumerate(table[:25], start=1):
         normalized = [_normalize_header(value) for value in row]
         columns = {key: None for key in HEADER_ALIASES}
         score = 0
@@ -515,7 +538,11 @@ def _detect_header(sheet):
                 if header in aliases and columns[key] is None:
                     columns[key] = idx
                     score += 1
-        if score > best[0] and (columns["part_no"] is not None or columns["part_name"] is not None) and columns["qty"] is not None:
+        if columns["erp_item_code"] is None and columns["part_no"] is not None and columns["part_description"] is not None:
+            possible_item_col = columns["part_no"] + 1
+            if possible_item_col < columns["part_description"] and not normalized[possible_item_col]:
+                columns["erp_item_code"] = possible_item_col
+        if score > best[0] and (columns["part_no"] is not None or columns["part_name"] is not None or columns["part_description"] is not None) and columns["qty"] is not None:
             best = (score, row_number, columns)
     return best[1], best[2]
 
@@ -524,11 +551,8 @@ def _normalize_header(value):
     value = _clean_text(value).lower()
     value = re.sub(r"[_/\-]+", " ", value)
     value = re.sub(r"\s+", " ", value).strip()
+    value = value.strip(".")
     return value
-
-
-def _cell_value(cell):
-    return cell.value if cell else None
 
 
 def _clean_text(value):
@@ -649,7 +673,6 @@ def _find_cycle(graph):
 
 def _resolve_or_create_items(design_item, parsed):
     source_to_item = {}
-    mapped_keys = set()
     summary = {"created": [], "reused": []}
     rows = []
     for assembly in parsed["assemblies"]:
@@ -659,17 +682,11 @@ def _resolve_or_create_items(design_item, parsed):
     for row, is_assembly in rows:
         key = row.get("source_part_no") or row.get("part_name")
         if key in source_to_item:
-            if key in mapped_keys:
-                row["mapped_item_code"] = source_to_item[key]
             continue
         if not is_assembly:
-            item_code = _find_mapped_item(row)
-            if item_code:
-                row["mapped_item_code"] = item_code
-                source_to_item[key] = item_code
-                mapped_keys.add(key)
-                summary["reused"].append(item_code)
-                continue
+            raw_material_item = _find_mapped_item(row)
+            if raw_material_item:
+                row["raw_material_item_code"] = raw_material_item
         item_code = _find_existing_item(row)
         if item_code:
             source_to_item[key] = item_code
@@ -747,6 +764,10 @@ def _normalize_thickness(value):
 
 
 def _find_existing_item(row):
+    erp_item_code = row.get("erp_item_code")
+    if erp_item_code and frappe.db.exists("Item", erp_item_code):
+        return erp_item_code
+
     source_part_no = row.get("source_part_no")
     if source_part_no and frappe.db.exists("Item", source_part_no):
         return source_part_no
@@ -766,7 +787,7 @@ def _get_engineering_reference_field():
 
 
 def _create_missing_item(design_item, row, is_assembly):
-    uom = row.get("uom") or design_item.uom
+    uom = _get_generated_item_uom(design_item, row, is_assembly)
     if not uom:
         frappe.throw(_("Row {0}: UOM is required to create missing Item.").format(row.get("source_row")))
     if not frappe.db.exists("UOM", uom):
@@ -791,6 +812,12 @@ def _create_missing_item(design_item, row, is_assembly):
     return item.name
 
 
+def _get_generated_item_uom(design_item, row, is_assembly):
+    if row.get("raw_material_item_code") and frappe.db.exists("UOM", "Nos"):
+        return "Nos"
+    return row.get("uom") or design_item.uom
+
+
 def _get_default_item_group(design_item, is_assembly):
     fg_item_code = _get_finished_good_item_code(design_item)
     if fg_item_code:
@@ -806,6 +833,7 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
     graph = _build_dependency_graph(parsed)
     assembly_map = {assembly["source_part_no"]: assembly for assembly in parsed["assemblies"] if assembly["source_part_no"]}
     assembly_boms = {}
+    component_boms = {}
     summary = {"created": [], "reused": []}
 
     def build_for(source):
@@ -816,12 +844,22 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
 
         assembly = assembly_map[source]
         item_code = source_to_item[source]
+        default_bom = _get_default_bom(item_code, design_item.company)
+        if default_bom:
+            assembly_boms[source] = default_bom
+            summary["reused"].append(default_bom)
+            return default_bom
+
         rows = []
         for component in assembly["components"]:
             component_key = component.get("source_part_no") or component.get("part_name")
             component_item = source_to_item[component_key]
-            child_bom = assembly_boms.get(component.get("source_part_no"))
-            rows.append(_make_bom_row(component_item, _get_component_bom_qty(component, child_bom), component.get("uom"), child_bom, component.get("source_row")))
+            child_bom = assembly_boms.get(component.get("source_part_no")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
+            if component.get("raw_material_item_code") and not child_bom:
+                child_bom, reused = _create_sheet_component_bom(design_item, component_item, component)
+                component_boms[component_key] = child_bom
+                summary["reused" if reused else "created"].append(child_bom)
+            rows.append(_make_bom_row(component_item, flt(component["qty"]), None if child_bom else component.get("uom"), child_bom, component.get("source_row")))
         rows = _combine_bom_rows(rows)
 
         bom_name, reused = _get_or_create_submitted_bom(
@@ -859,15 +897,30 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
     return assembly_boms, summary
 
 
-def _get_component_bom_qty(component, child_bom):
-    qty = flt(component.get("qty"))
-    if child_bom:
-        return qty
-    if component.get("mapped_item_code") and _normalize_mapping_value(component.get("uom")) in {"kg", "kgs", "kilogram", "kilograms"}:
-        mass = flt(component.get("mass"))
-        if mass > 0:
-            return mass * qty
-    return qty
+def _create_sheet_component_bom(design_item, item_code, component):
+    raw_material_item = component.get("raw_material_item_code")
+    if not raw_material_item:
+        return None, True
+    raw_qty = flt(component.get("gross_weight")) or (flt(component.get("mass")) * flt(component.get("qty")))
+    if raw_qty <= 0:
+        frappe.throw(_("Row {0}: Gross Weight is required for sheet raw material BOM.").format(component.get("source_row")))
+    raw_stock_uom = frappe.db.get_value("Item", raw_material_item, "stock_uom")
+    rows = [_make_bom_row(raw_material_item, raw_qty, raw_stock_uom, None, component.get("source_row"))]
+    return _get_or_create_submitted_bom(
+        item_code=item_code,
+        company=design_item.company,
+        quantity=1,
+        rows=rows,
+        is_default=1,
+    )
+
+
+def _get_default_bom(item_code, company=None):
+    default_bom = frappe.db.get_value("Item", item_code, "default_bom")
+    if default_bom and frappe.db.get_value("BOM", default_bom, "docstatus") == 1:
+        if not company or frappe.db.get_value("BOM", default_bom, "company") == company:
+            return default_bom
+    return frappe.db.get_value("BOM", {"item": item_code, "company": company, "is_default": 1, "docstatus": 1}, "name")
 
 
 def _make_bom_row(item_code, qty, source_uom, child_bom, source_row):
