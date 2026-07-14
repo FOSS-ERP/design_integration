@@ -21,6 +21,24 @@ def create_custom_fields_on_migrate():
                 "insert_after" : "project",
                 "read_only": 1
             }
+        ],
+        "Design Request Item": [
+            {
+                "fieldname": "custom_bom_import_status",
+                "label": "BOM Import Status",
+                "fieldtype": "Select",
+                "options": "Not Started\nValidation Failed\nProcessing\nCompleted\nFailed",
+                "default": "Not Started",
+                "insert_after": "custom_bom_importer",
+                "read_only": 1,
+            },
+            {
+                "fieldname": "custom_bom_import_log",
+                "label": "BOM Import Log",
+                "fieldtype": "Long Text",
+                "insert_after": "custom_bom_import_status",
+                "read_only": 1,
+            },
         ]
     }
 

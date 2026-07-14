@@ -1,0 +1,116 @@
+{
+ "actions": [],
+ "allow_import": 1,
+ "allow_rename": 1,
+ "autoname": "format:BOM-MAP-{#####}",
+ "creation": "2026-07-14 00:00:00.000000",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "sheet_description",
+  "sheet_metal_thickness",
+  "material",
+  "column_break_1",
+  "erp_item",
+  "priority"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "description": "Value from the BOM sheet DESCRIPTION column, for example Sheet.",
+   "fieldname": "sheet_description",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sheet Description",
+   "reqd": 1
+  },
+  {
+   "description": "Value from the BOM sheet Sheet Metal Thickness column, for example 1, 1.5, or 2.",
+   "fieldname": "sheet_metal_thickness",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Sheet Metal Thickness",
+   "reqd": 1
+  },
+  {
+   "description": "Optional value from the BOM sheet MATERIAL column. Leave blank to match any material.",
+   "fieldname": "material",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Material"
+  },
+  {
+   "fieldname": "column_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "erp_item",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "ERP Item",
+   "options": "Item",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "description": "Higher priority wins when more than one mapping matches.",
+   "fieldname": "priority",
+   "fieldtype": "Int",
+   "label": "Priority"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-07-14 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Design Integration",
+ "name": "Design BOM Item Mapping",
+ "naming_rule": "Expression",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Design Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Design User"
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
