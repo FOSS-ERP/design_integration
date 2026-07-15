@@ -485,6 +485,12 @@ def _parse_table_rows(table):
     header_row, columns = _detect_header(table)
     if not header_row:
         return {"assemblies": [], "main_components": [], "rows": []}
+    if columns.get("qty") is None:
+        frappe.throw(
+            _(
+                "QTY column is missing in the BOM import sheet. Add a QTY, QTY., Quantity, or Required Qty header to the quantity column."
+            )
+        )
 
     assemblies = []
     main_components = []
@@ -586,7 +592,7 @@ def _detect_header(table):
                 columns["erp_item_code"] = possible_item_col
         if columns["qty"] is None:
             columns["qty"] = _infer_qty_column(columns, normalized)
-        if score > best[0] and (columns["part_no"] is not None or columns["part_name"] is not None or columns["part_description"] is not None) and columns["qty"] is not None:
+        if score > best[0] and (columns["part_no"] is not None or columns["part_name"] is not None or columns["part_description"] is not None):
             best = (score, row_number, columns)
     return best[1], best[2]
 
