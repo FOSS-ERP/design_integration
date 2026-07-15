@@ -192,6 +192,9 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertEqual(errors, [])
 
+	def test_mapping_normalizes_material_hash_spacing(self):
+		self.assertEqual(dri._normalize_mapping_value("AISI430#4"), dri._normalize_mapping_value("AISI430 #4"))
+
 	def test_child_bom_created_before_parent_and_fg(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
 		parsed = {

@@ -841,7 +841,8 @@ def _find_mapped_item(row):
 
 
 def _normalize_mapping_value(value):
-    return re.sub(r"\s+", " ", _clean_text(value)).strip().lower()
+    value = re.sub(r"\s+", " ", _clean_text(value)).strip().lower()
+    return re.sub(r"\s*#\s*", "#", value)
 
 
 def _normalize_thickness(value):
