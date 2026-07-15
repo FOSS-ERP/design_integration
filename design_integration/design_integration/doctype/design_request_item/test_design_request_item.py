@@ -45,9 +45,9 @@ class TestDesignRequestItem(TestCase):
 			[None, "Item Code", "UOM"],
 			[None, "FG-001", "Nos"],
 			[],
-			["ITEM NO.", "PART NUMBER", "DESCRIPTION", "UOM", "QTY."],
-			[1, "SKIRTING ASM", "SUB ASSY", "Nos", 1],
-			[None, "FRONT SKIRTING PANEL", "Sheet", "Kg", 2],
+			["ITEM NO.", "PART NUMBER.", "", "PART DESCRIPTION", "DESCRIPTION", "Bounding Box Length", "Bounding Box Width", "MATERIAL", "Sheet Metal Thickness", "Mass", "QTY.", "GROSS WEIGHT"],
+			[1, "SKIRTING ASM", "", "SKIRTING ASM", "SUB ASSY", "", "", "", "", "", 1, ""],
+			[None, "PANEL-001", "RM-001", "FRONT SKIRTING PANEL", "Sheet", 1410, 185.79, "AISI430 #4", 1, 2.03, 2, 2.62],
 		])
 
 		parsed = dri._parse_bom_workbook(path, "FG-001")
@@ -55,6 +55,9 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(parsed["assemblies"][0]["source_part_no"], "SKIRTING ASM")
 		self.assertEqual(parsed["assemblies"][0]["part_name"], "SKIRTING ASM")
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["part_name"], "FRONT SKIRTING PANEL")
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["erp_item_code"], "RM-001")
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["gross_weight"], 2.62)
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["bounding_box_length"], 1410)
 
 	def test_nested_assembly_graph_uses_exact_part_number(self):
 		parsed = {
@@ -138,7 +141,8 @@ class TestDesignRequestItem(TestCase):
 			created_for.append(item_code)
 			return f"BOM-{item_code}", False
 
-		with patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "bom_no": child}), \
+		with patch.object(dri, "_get_default_bom", return_value=None), \
+			patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "bom_no": child}), \
 			patch.object(dri, "_get_or_create_submitted_bom", side_effect=fake_bom):
 			assembly_boms, summary = dri._create_bom_hierarchy(design_item, parsed, source_to_item)
 
@@ -146,7 +150,7 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(assembly_boms["__fg__"], "BOM-FG-001")
 		self.assertIn("BOM-FG-001", summary["created"])
 
-	def test_mapped_raw_material_reuses_item_and_combines_bom_rows(self):
+	def test_sheet_rows_create_child_boms_from_mapped_raw_material(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
 		parsed = {
 			"assemblies": [
@@ -161,9 +165,14 @@ class TestDesignRequestItem(TestCase):
 							"row_type": "Sheet",
 							"sheet_metal_thickness": "1",
 							"material": "AISI430 #4",
+							"bounding_box_length": 1410,
+							"bounding_box_width": 185.79,
 							"qty": 2,
 							"uom": "Kg",
 							"mass": 2.03,
+							"gross_weight": 2.62,
+							"raw_material_item_code": "RM-SHEET-1MM",
+							"raw_material_density": 8,
 							"source_row": 2,
 						},
 						{
@@ -172,9 +181,14 @@ class TestDesignRequestItem(TestCase):
 							"row_type": "Sheet",
 							"sheet_metal_thickness": "1",
 							"material": "AISI430 #4",
+							"bounding_box_length": 669.3,
+							"bounding_box_width": 185.79,
 							"qty": 2,
 							"uom": "Kg",
 							"mass": 0.95,
+							"gross_weight": 1.243,
+							"raw_material_item_code": "RM-SHEET-1MM",
+							"raw_material_density": 8,
 							"source_row": 3,
 						},
 					],
@@ -182,23 +196,31 @@ class TestDesignRequestItem(TestCase):
 			]
 		}
 		captured_rows = {}
+		created_for = []
 
 		def fake_bom(item_code, company, quantity, rows, is_default=0):
+			created_for.append(item_code)
 			captured_rows[item_code] = rows
 			return f"BOM-{item_code}", False
 
-		with patch.object(dri, "_find_mapped_item", return_value="RM-SHEET-1MM"), \
-			patch.object(dri, "_find_existing_item", side_effect=lambda row: "ITEM-MAIN" if row.get("source_part_no") == "MAIN" else None), \
+		source_to_item = {"MAIN": "ITEM-MAIN", "PANEL-1": "SF-PANEL-1", "PANEL-2": "SF-PANEL-2"}
+		with patch.object(dri, "_get_default_bom", return_value=None), \
+			patch.object(dri.frappe, "db", SimpleNamespace(get_value=lambda *args, **kwargs: "Kg")), \
 			patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "stock_uom": uom, "conversion_factor": 1, "bom_no": child}), \
 			patch.object(dri, "_get_or_create_submitted_bom", side_effect=fake_bom):
-			source_to_item, item_summary = dri._resolve_or_create_items(design_item, parsed)
 			dri._create_bom_hierarchy(design_item, parsed, source_to_item)
 
-		self.assertEqual(item_summary["created"], [])
-		self.assertEqual(source_to_item["PANEL-1"], "RM-SHEET-1MM")
-		self.assertEqual(len(captured_rows["ITEM-MAIN"]), 1)
-		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "RM-SHEET-1MM")
-		self.assertAlmostEqual(captured_rows["ITEM-MAIN"][0]["qty"], 5.96)
+		self.assertEqual(created_for, ["SF-PANEL-1", "SF-PANEL-2", "ITEM-MAIN", "FG-001"])
+		self.assertEqual(captured_rows["SF-PANEL-1"][0]["item_code"], "RM-SHEET-1MM")
+		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 4.1914224)
+		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
+		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
+
+	def test_clean_text_extracts_markdown_link_label(self):
+		self.assertEqual(
+			dri._clean_text("[**P-SY-SA-0001-SQ-2-40-40-810**](http://site2.local/item)"),
+			"P-SY-SA-0001-SQ-2-40-40-810",
+		)
 
 	def test_final_fg_bom_signature_links_to_design_item_code(self):
 		row = dri._bom_signature([{"item_code": "FG-001", "qty": 1, "uom": "Nos", "bom_no": "BOM-SA"}])

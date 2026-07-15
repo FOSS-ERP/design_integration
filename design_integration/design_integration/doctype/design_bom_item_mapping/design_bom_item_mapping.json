@@ -11,6 +11,7 @@
   "sheet_description",
   "sheet_metal_thickness",
   "material",
+  "material_density",
   "column_break_1",
   "erp_item",
   "priority"
@@ -44,6 +45,13 @@
    "fieldtype": "Data",
    "in_list_view": 1,
    "label": "Material"
+  },
+  {
+   "description": "Density used for sheet raw material consumption formula: Length * Width * Thickness * Density / 1000000.",
+   "fieldname": "material_density",
+   "fieldtype": "Float",
+   "in_list_view": 1,
+   "label": "Material Density"
   },
   {
    "fieldname": "column_break_1",
