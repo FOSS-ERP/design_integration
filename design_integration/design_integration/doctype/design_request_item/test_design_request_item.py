@@ -77,6 +77,19 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["gross_weight"], 2.62)
 		self.assertEqual(parsed["assemblies"][0]["components"][0]["bounding_box_length"], 1410)
 
+	def test_parse_sheet_with_blank_qty_header_after_mass(self):
+		path = self.make_workbook([
+			["ITEM NO", "Part Number", "ASM/PART NAME", "Description", "Bounding Box Length", "Bounding Box Width", "MATERIAL", "Sheet Metal Thickness", "Mass", ""],
+			[1, "CP-CB-01-120-60-85-01", "BOTTOM ASM", "SUB ASSY", "", "", "", "", "", 1],
+			["", "CP-CB-01-120-60-85-01-01", "BOTTOM PANEL", "Sheet", 1320.38, 585.89, "AISI304 #4", 1, 6.27, 1],
+		])
+
+		parsed = dri._parse_bom_workbook(path, "FG-001")
+
+		self.assertEqual(parsed["assemblies"][0]["source_part_no"], "CP-CB-01-120-60-85-01")
+		self.assertEqual(parsed["assemblies"][0]["qty_in_fg"], 1)
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["qty"], 1)
+
 	def test_nested_assembly_graph_uses_exact_part_number(self):
 		parsed = {
 			"assemblies": [
