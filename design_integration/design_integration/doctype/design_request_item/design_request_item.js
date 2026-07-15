@@ -594,6 +594,10 @@ function enforceDesignStatusOptions(frm) {
         options = preApproval;
     }
 
+    if (!canCloseDesignItem(frm)) {
+        options = options.filter(status => !['Completed', 'Cancelled'].includes(status));
+    }
+
     frm.set_df_property('design_status', 'options', options.join('\n'));
 
     // If current value not in allowed, reset to first allowed
@@ -602,12 +606,21 @@ function enforceDesignStatusOptions(frm) {
     }
 }
 
+function canCloseDesignItem(frm) {
+    return Boolean(frm.doc.sku_generated && frm.doc.item_created && frm.doc.new_item_code && frm.doc.bom_created && frm.doc.bom_name);
+}
+
 
 function showStatusDialog(frm) {
+    let status_options = ['Pending','Approval Drawing','Send for Approval','Design','Modelling','Production Drawing','SKU Generation','BOM','Nesting','Completed','Cancelled'];
+    if (!canCloseDesignItem(frm)) {
+        status_options = status_options.filter(status => !['Completed', 'Cancelled'].includes(status));
+    }
+
     frappe.prompt({
         label: __('Design Status'),
         fieldtype: 'Select',
-        options: 'Pending\nApproval Drawing\nSend for Approval\nDesign\nModelling\nProduction Drawing\nSKU Generation\nBOM\nNesting\nCompleted\nCancelled',
+        options: status_options.join('\n'),
         default: frm.doc.design_status || 'Pending'
     }, function(values) {
         frm.set_value('design_status', values.design_status);

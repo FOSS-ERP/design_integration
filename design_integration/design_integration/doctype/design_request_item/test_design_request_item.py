@@ -39,6 +39,24 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(len(parsed["assemblies"]), 2)
 		self.assertEqual(parsed["assemblies"][0]["components"][1]["source_part_no"], "PART-002")
 
+	def test_main_assembly_rows_become_direct_fg_components(self):
+		path = self.make_workbook([
+			["Part No", "Part Name", "Qty", "UOM", "Type"],
+			["SA-001", "LEG TUBE ASM", 4, "Nos", "SUB ASSY"],
+			["PART-001", "LEG TUBE", 1, "Nos", "PART"],
+			["SA-002", "SHELF ASM", 2, "Nos", "SUB ASSY"],
+			["PART-002", "SHELF", 1, "Nos", "PART"],
+			["FAST-001", "RIVET", 10, "Nos", "MAIN ASSY"],
+			["PART-003", "SHELF CLIP", 1, "Nos", "PART"],
+		])
+
+		parsed = dri._parse_bom_workbook(path, "FG-001")
+
+		self.assertEqual(len(parsed["assemblies"]), 2)
+		self.assertEqual(parsed["main_components"][0]["source_part_no"], "FAST-001")
+		self.assertEqual(parsed["main_components"][0]["qty"], 10)
+		self.assertEqual(parsed["assemblies"][1]["components"][-1]["source_part_no"], "PART-003")
+
 	def test_parse_part_number_description_sheet(self):
 		path = self.make_workbook([
 			["FG"],
@@ -116,6 +134,38 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(source_to_item["PART-001"], "PART-001")
 		self.assertEqual(summary["reused"], ["SA-001", "PART-001"])
 
+	def test_cancelled_requires_sku_and_bom(self):
+		doc = SimpleNamespace(
+			design_status="Cancelled",
+			sku_generated=1,
+			item_created=1,
+			new_item_code="FG-001",
+			bom_created=0,
+			bom_name="",
+		)
+
+		with patch.object(dri.frappe, "throw", side_effect=Exception("blocked")):
+			with self.assertRaises(Exception):
+				dri.DesignRequestItem.validate_terminal_status_requirements(doc)
+
+	def test_existing_item_duplicate_part_number_can_have_sheet_description_variants(self):
+		errors = []
+		seen = {}
+
+		with patch.object(dri, "_find_existing_item", return_value="5-FST-SS-4/12MM-RVT"):
+			dri._track_duplicate_source(
+				{"source_part_no": "5-FST-SS-4/12MM-RVT", "part_name": "M4 AL RIVET", "uom": "Nos"},
+				seen,
+				errors,
+			)
+			dri._track_duplicate_source(
+				{"source_part_no": "5-FST-SS-4/12MM-RVT", "part_name": "M4 AL RIVET ", "uom": ""},
+				seen,
+				errors,
+			)
+
+		self.assertEqual(errors, [])
+
 	def test_child_bom_created_before_parent_and_fg(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
 		parsed = {
@@ -149,6 +199,38 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(created_for, ["ITEM-LEG", "ITEM-MAIN", "FG-001"])
 		self.assertEqual(assembly_boms["__fg__"], "BOM-FG-001")
 		self.assertIn("BOM-FG-001", summary["created"])
+
+	def test_main_components_are_added_to_final_fg_bom(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
+		parsed = {
+			"assemblies": [
+				{
+					"source_part_no": "SA-001",
+					"qty_in_fg": 4,
+					"uom": "Nos",
+					"components": [{"source_part_no": "PART-001", "qty": 1, "uom": "Nos", "source_row": 2}],
+				}
+			],
+			"main_components": [
+				{"source_part_no": "FAST-001", "part_name": "M5 HEX INSERT", "qty": 2, "uom": "Nos", "source_row": 3}
+			],
+		}
+		source_to_item = {"SA-001": "ITEM-SA", "PART-001": "ITEM-PART", "FAST-001": "5-FST-5MM-IN-HX-NT"}
+		captured_rows = {}
+
+		def fake_bom(item_code, company, quantity, rows, is_default=0):
+			captured_rows[item_code] = rows
+			return f"BOM-{item_code}", False
+
+		with patch.object(dri, "_get_default_bom", return_value=None), \
+			patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "bom_no": child}), \
+			patch.object(dri, "_get_or_create_submitted_bom", side_effect=fake_bom):
+			dri._create_bom_hierarchy(design_item, parsed, source_to_item)
+
+		self.assertEqual(
+			[(row["item_code"], row["qty"], row["bom_no"]) for row in captured_rows["FG-001"]],
+			[("ITEM-SA", 4, "BOM-ITEM-SA"), ("5-FST-5MM-IN-HX-NT", 2, None)],
+		)
 
 	def test_sheet_rows_create_child_boms_from_mapped_raw_material(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
