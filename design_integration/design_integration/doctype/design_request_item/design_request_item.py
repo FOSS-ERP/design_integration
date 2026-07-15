@@ -41,6 +41,7 @@ class DesignRequestItem(Document):
         """Validate Design Request Item"""
         self.validate_item()
         self.update_current_stage()
+        self.validate_terminal_status_requirements()
         self.create_work_order()
         self.validate_revision_reason()
     
@@ -182,6 +183,19 @@ class DesignRequestItem(Document):
             frappe.throw(
                 "Revision Reason is mandatory when Revision Requested is checked."
             )
+
+    def validate_terminal_status_requirements(self):
+        if self.design_status not in ("Completed", "Cancelled"):
+            return
+
+        missing = []
+        if not (self.sku_generated and self.item_created and self.new_item_code):
+            missing.append(_("SKU"))
+        if not (self.bom_created and self.bom_name):
+            missing.append(_("BOM"))
+
+        if missing:
+            frappe.throw(_("Cannot mark {0} until {1} is added.").format(self.design_status, ", ".join(missing)))
             
 @frappe.whitelist()
 def update_design_status(docname, new_status):
@@ -301,6 +315,7 @@ HEADER_ALIASES = {
 
 SHEET_HINTS = ("SUB BOM", "BOM IMPORT", "BOM_IMPORT", "BOM")
 SUB_ASSEMBLY_RE = re.compile(r"sub\s*[- ]?\s*ass(?:y|embly)", re.IGNORECASE)
+MAIN_ASSEMBLY_RE = re.compile(r"main\s*[- ]?\s*ass(?:y|embly)", re.IGNORECASE)
 
 
 @frappe.whitelist()
@@ -469,9 +484,10 @@ def _parse_sheet(sheet):
 def _parse_table_rows(table):
     header_row, columns = _detect_header(table)
     if not header_row:
-        return {"assemblies": [], "rows": []}
+        return {"assemblies": [], "main_components": [], "rows": []}
 
     assemblies = []
+    main_components = []
     current = None
     rows = []
     for source_row, row in enumerate(table[header_row:], start=header_row + 1):
@@ -492,6 +508,24 @@ def _parse_table_rows(table):
         mass = flt(row_values.get("mass"))
         gross_weight = flt(row_values.get("gross_weight"))
         rows.append(row_values)
+
+        if _is_main_assembly_row(row_type, row_values):
+            main_components.append({
+                "source_row": source_row,
+                "source_part_no": part_no,
+                "erp_item_code": erp_item_code,
+                "part_name": part_name,
+                "qty": qty,
+                "uom": uom,
+                "row_type": row_type,
+                "material": material,
+                "bounding_box_length": bounding_box_length,
+                "bounding_box_width": bounding_box_width,
+                "sheet_metal_thickness": sheet_metal_thickness,
+                "mass": mass,
+                "gross_weight": gross_weight,
+            })
+            continue
 
         if _is_sub_assembly_row(row_type, row_values):
             current = {
@@ -530,7 +564,7 @@ def _parse_table_rows(table):
                 "gross_weight": gross_weight,
             })
 
-    return {"assemblies": assemblies, "rows": rows}
+    return {"assemblies": assemblies, "main_components": main_components, "rows": rows}
 
 
 def _detect_header(table):
@@ -584,6 +618,16 @@ def _is_sub_assembly_row(row_type, row_values):
     return False
 
 
+def _is_main_assembly_row(row_type, row_values):
+    if row_type and MAIN_ASSEMBLY_RE.search(row_type):
+        return True
+    for value in row_values.values():
+        value = _clean_text(value)
+        if value and MAIN_ASSEMBLY_RE.search(value):
+            return True
+    return False
+
+
 def _validate_bom_structure(design_item, parsed):
     errors = []
     fg_item_code = _get_finished_good_item_code(design_item)
@@ -615,6 +659,13 @@ def _validate_bom_structure(design_item, parsed):
             if component["source_part_no"] == fg_item_code:
                 errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(component["source_row"]))
             _track_duplicate_source(component, seen, errors)
+    for component in parsed.get("main_components", []):
+        _validate_row_identity(component, "Main assembly component", errors)
+        if flt(component["qty"]) <= 0:
+            errors.append(_("Row {0}: main assembly component quantity must be greater than zero.").format(component["source_row"]))
+        if component["source_part_no"] == fg_item_code:
+            errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(component["source_row"]))
+        _track_duplicate_source(component, seen, errors)
 
     graph = _build_dependency_graph(parsed)
     cycle = _find_cycle(graph)
@@ -635,9 +686,13 @@ def _track_duplicate_source(row, seen, errors):
     part_no = row.get("source_part_no")
     if not part_no:
         return
+    if _find_existing_item(row):
+        return
     signature = (_clean_text(row.get("part_name")).lower(), _clean_text(row.get("uom")).lower())
     if part_no in seen and seen[part_no] != signature:
-        errors.append(_("Part Number {0} has conflicting descriptions or UOMs.").format(part_no))
+        error = _("Part Number {0} has conflicting descriptions or UOMs.").format(part_no)
+        if error not in errors:
+            errors.append(error)
     seen.setdefault(part_no, signature)
 
 
@@ -690,6 +745,7 @@ def _resolve_or_create_items(design_item, parsed):
     for assembly in parsed["assemblies"]:
         rows.append((assembly, True))
         rows.extend((component, False) for component in assembly["components"])
+    rows.extend((component, False) for component in parsed.get("main_components", []))
 
     for row, is_assembly in rows:
         key = row.get("source_part_no") or row.get("part_name")
@@ -854,6 +910,16 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
     component_boms = {}
     summary = {"created": [], "reused": []}
 
+    def make_component_row(component):
+        component_key = component.get("source_part_no") or component.get("part_name")
+        component_item = source_to_item[component_key]
+        child_bom = assembly_boms.get(component.get("source_part_no")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
+        if component.get("raw_material_item_code") and not child_bom:
+            child_bom, reused = _create_sheet_component_bom(design_item, component_item, component)
+            component_boms[component_key] = child_bom
+            summary["reused" if reused else "created"].append(child_bom)
+        return _make_bom_row(component_item, flt(component["qty"]), None if child_bom else component.get("uom"), child_bom, component.get("source_row"))
+
     def build_for(source):
         if source in assembly_boms:
             return assembly_boms[source]
@@ -862,22 +928,10 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
 
         assembly = assembly_map[source]
         item_code = source_to_item[source]
-        default_bom = _get_default_bom(item_code, design_item.company)
-        if default_bom:
-            assembly_boms[source] = default_bom
-            summary["reused"].append(default_bom)
-            return default_bom
 
         rows = []
         for component in assembly["components"]:
-            component_key = component.get("source_part_no") or component.get("part_name")
-            component_item = source_to_item[component_key]
-            child_bom = assembly_boms.get(component.get("source_part_no")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
-            if component.get("raw_material_item_code") and not child_bom:
-                child_bom, reused = _create_sheet_component_bom(design_item, component_item, component)
-                component_boms[component_key] = child_bom
-                summary["reused" if reused else "created"].append(child_bom)
-            rows.append(_make_bom_row(component_item, flt(component["qty"]), None if child_bom else component.get("uom"), child_bom, component.get("source_row")))
+            rows.append(make_component_row(component))
         rows = _combine_bom_rows(rows)
 
         bom_name, reused = _get_or_create_submitted_bom(
@@ -901,6 +955,8 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
         assembly = assembly_map[source]
         item_code = source_to_item[source]
         fg_rows.append(_make_bom_row(item_code, assembly["qty_in_fg"], assembly.get("uom"), assembly_boms[source], assembly.get("source_row")))
+    for component in parsed.get("main_components", []):
+        fg_rows.append(make_component_row(component))
     fg_rows = _combine_bom_rows(fg_rows)
 
     fg_bom, reused = _get_or_create_submitted_bom(
