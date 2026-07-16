@@ -39,6 +39,13 @@ def create_custom_fields_on_migrate():
                 "insert_after": "custom_bom_import_status",
                 "read_only": 1,
             },
+            {
+                "fieldname": "custom_generated_sku_barcodes",
+                "label": "Generated SKU Barcodes",
+                "fieldtype": "Long Text",
+                "insert_after": "custom_bom_import_log",
+                "read_only": 1,
+            },
         ]
     }
 

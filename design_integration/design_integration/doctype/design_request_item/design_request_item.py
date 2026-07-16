@@ -14,6 +14,8 @@ import tempfile
 import requests
 from openpyxl import load_workbook
 
+GENERATED_BARCODE_TYPE = "CODE-39"
+
 class DesignRequestItem(Document):
     def autoname(self):
         """Generate name for Design Request Item"""
@@ -328,6 +330,7 @@ def generate_bom_from_design_sheet(design_request_item: str):
         "items_reused": [],
         "boms_created": [],
         "boms_reused": [],
+        "generated_sku_barcodes": [],
         "warnings": [],
     }
 
@@ -345,6 +348,7 @@ def generate_bom_from_design_sheet(design_request_item: str):
         source_to_item, item_summary = _resolve_or_create_items(design_item, parsed)
         result["items_created"].extend(item_summary["created"])
         result["items_reused"].extend(item_summary["reused"])
+        result["generated_sku_barcodes"].extend(item_summary.get("barcodes", []))
 
         assembly_boms, bom_summary = _create_bom_hierarchy(design_item, parsed, source_to_item)
         result["boms_created"].extend(bom_summary["created"])
@@ -357,6 +361,7 @@ def generate_bom_from_design_sheet(design_request_item: str):
 
         design_item.db_set("bom_name", final_fg_bom, update_modified=False)
         design_item.db_set("bom_created", 1, update_modified=False)
+        _set_generated_sku_barcode_log(design_item.name, result["generated_sku_barcodes"])
         _set_bom_import_state(
             design_item.name,
             "Completed",
@@ -385,6 +390,30 @@ def _set_bom_import_state(design_item_name, status, log):
         values["custom_bom_import_log"] = log[-60000:] if log else ""
     if values:
         frappe.db.set_value("Design Request Item", design_item_name, values, update_modified=False)
+
+
+def _set_generated_sku_barcode_log(design_item_name, barcode_rows):
+    if not frappe.get_meta("Design Request Item").has_field("custom_generated_sku_barcodes"):
+        return
+
+    if not barcode_rows:
+        value = ""
+    else:
+        value = "\n".join(
+            "{item_code}\t{barcode}\t{barcode_type}".format(
+                item_code=row.get("item_code"),
+                barcode=row.get("barcode"),
+                barcode_type=row.get("barcode_type"),
+            )
+            for row in barcode_rows
+        )
+    frappe.db.set_value(
+        "Design Request Item",
+        design_item_name,
+        "custom_generated_sku_barcodes",
+        value,
+        update_modified=False,
+    )
 
 
 def _validate_import_permissions(design_item):
@@ -762,7 +791,7 @@ def _find_cycle(graph):
 
 def _resolve_or_create_items(design_item, parsed):
     source_to_item = {}
-    summary = {"created": [], "reused": []}
+    summary = {"created": [], "reused": [], "barcodes": []}
     rows = []
     for assembly in parsed["assemblies"]:
         rows.append((assembly, True))
@@ -786,8 +815,16 @@ def _resolve_or_create_items(design_item, parsed):
         if not frappe.has_permission("Item", "create"):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
         item_code = _create_missing_item(design_item, row, is_assembly)
+        barcode = _assign_generated_item_barcode(item_code)
         source_to_item[key] = item_code
         summary["created"].append(item_code)
+        summary["barcodes"].append(
+            {
+                "item_code": item_code,
+                "barcode": barcode,
+                "barcode_type": GENERATED_BARCODE_TYPE,
+            }
+        )
     return source_to_item, summary
 
 
@@ -907,6 +944,55 @@ def _create_missing_item(design_item, row, is_assembly):
         item.name = desired_item_code
         frappe.db.set_value("Item", desired_item_code, "item_code", desired_item_code, update_modified=False)
     return item.name
+
+
+def _assign_generated_item_barcode(item_code):
+    existing_barcode = frappe.db.get_value(
+        "Item Barcode",
+        {"parent": item_code, "barcode_type": GENERATED_BARCODE_TYPE},
+        "barcode",
+    )
+    if existing_barcode:
+        return existing_barcode
+
+    item = frappe.get_doc("Item", item_code)
+    for _attempt in range(100):
+        barcode = _get_next_generated_barcode()
+        if frappe.db.exists("Item Barcode", {"barcode": barcode}):
+            continue
+
+        item.append(
+            "barcodes",
+            {
+                "barcode": barcode,
+                "barcode_type": GENERATED_BARCODE_TYPE,
+                "uom": item.stock_uom,
+            },
+        )
+        try:
+            item.save(ignore_permissions=True)
+            return barcode
+        except (frappe.DuplicateEntryError, frappe.UniqueValidationError):
+            item.set("barcodes", [row for row in item.get("barcodes") if row.get("barcode") != barcode])
+            item.reload()
+
+    frappe.throw(_("Could not generate a unique 6 digit barcode for Item {0}.").format(item_code))
+
+
+def _get_next_generated_barcode():
+    result = frappe.db.sql(
+        """
+        select barcode
+        from `tabItem Barcode`
+        where barcode regexp '^[0-9]{6}$'
+        order by barcode desc
+        limit 1
+        """
+    )
+    next_number = (int(result[0][0]) + 1) if result else 1
+    if next_number > 999999:
+        frappe.throw(_("No 6 digit barcode numbers are available."))
+    return f"{next_number:06d}"
 
 
 def _get_generated_item_uom(design_item, row, is_assembly):
