@@ -7,6 +7,7 @@ from frappe.utils import now_datetime
 from frappe.utils import flt
 import frappe.model.naming
 import csv
+import io
 import os
 import re
 import tempfile
@@ -362,6 +363,7 @@ def generate_bom_from_design_sheet(design_request_item: str):
         design_item.db_set("bom_name", final_fg_bom, update_modified=False)
         design_item.db_set("bom_created", 1, update_modified=False)
         _set_generated_sku_barcode_log(design_item.name, result["generated_sku_barcodes"])
+        _attach_generated_sku_barcode_sheet(design_item.name, result["generated_sku_barcodes"])
         _set_bom_import_state(
             design_item.name,
             "Completed",
@@ -414,6 +416,44 @@ def _set_generated_sku_barcode_log(design_item_name, barcode_rows):
         value,
         update_modified=False,
     )
+
+
+def _attach_generated_sku_barcode_sheet(design_item_name, barcode_rows):
+    meta = frappe.get_meta("Design Request Item")
+    if not meta.has_field("custom_generated_sku_barcode_sheet"):
+        return
+
+    file_url = ""
+    if barcode_rows:
+        file_doc = frappe.get_doc(
+            {
+                "doctype": "File",
+                "file_name": f"{design_item_name}-generated-sku-barcodes.csv",
+                "attached_to_doctype": "Design Request Item",
+                "attached_to_name": design_item_name,
+                "is_private": 1,
+                "content": _format_generated_sku_barcode_csv(barcode_rows),
+            }
+        )
+        file_doc.insert(ignore_permissions=True)
+        file_url = file_doc.file_url
+
+    frappe.db.set_value(
+        "Design Request Item",
+        design_item_name,
+        "custom_generated_sku_barcode_sheet",
+        file_url,
+        update_modified=False,
+    )
+
+
+def _format_generated_sku_barcode_csv(barcode_rows):
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["Item Code", "Barcode", "Barcode Type"])
+    for row in barcode_rows:
+        writer.writerow([row.get("item_code"), row.get("barcode"), row.get("barcode_type")])
+    return output.getvalue()
 
 
 def _validate_import_permissions(design_item):

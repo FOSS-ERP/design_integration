@@ -46,6 +46,13 @@ def create_custom_fields_on_migrate():
                 "insert_after": "custom_bom_import_log",
                 "read_only": 1,
             },
+            {
+                "fieldname": "custom_generated_sku_barcode_sheet",
+                "label": "Generated SKU Barcode Sheet",
+                "fieldtype": "Attach",
+                "insert_after": "custom_generated_sku_barcodes",
+                "read_only": 1,
+            },
         ]
     }
 

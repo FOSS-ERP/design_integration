@@ -204,6 +204,18 @@ class TestDesignRequestItem(TestCase):
 	def test_mapping_normalizes_material_hash_spacing(self):
 		self.assertEqual(dri._normalize_mapping_value("AISI430#4"), dri._normalize_mapping_value("AISI430 #4"))
 
+	def test_generated_sku_barcode_csv_contains_only_generated_rows(self):
+		csv_content = dri._format_generated_sku_barcode_csv(
+			[
+				{"item_code": "SKU-001", "barcode": "000001", "barcode_type": "CODE-39"},
+				{"item_code": "SKU-002", "barcode": "000002", "barcode_type": "CODE-39"},
+			]
+		)
+
+		self.assertIn("Item Code,Barcode,Barcode Type", csv_content)
+		self.assertIn("SKU-001,000001,CODE-39", csv_content)
+		self.assertIn("SKU-002,000002,CODE-39", csv_content)
+
 	def test_child_bom_created_before_parent_and_fg(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
 		parsed = {
