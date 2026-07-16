@@ -132,12 +132,20 @@ class TestDesignRequestItem(TestCase):
 		with patch.object(dri, "_find_mapped_item", return_value=None), \
 			patch.object(dri, "_find_existing_item", return_value=None), \
 			patch.object(dri.frappe, "has_permission", return_value=True), \
-			patch.object(dri, "_create_missing_item", side_effect=["ITEM-SA", "ITEM-PART"]):
+			patch.object(dri, "_create_missing_item", side_effect=["ITEM-SA", "ITEM-PART"]), \
+			patch.object(dri, "_assign_generated_item_barcode", side_effect=["000001", "000002"]):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
 
 		self.assertEqual(source_to_item["SA-001"], "ITEM-SA")
 		self.assertEqual(source_to_item["PART-001"], "ITEM-PART")
 		self.assertEqual(summary["created"], ["ITEM-SA", "ITEM-PART"])
+		self.assertEqual(
+			summary["barcodes"],
+			[
+				{"item_code": "ITEM-SA", "barcode": "000001", "barcode_type": "CODE-39"},
+				{"item_code": "ITEM-PART", "barcode": "000002", "barcode_type": "CODE-39"},
+			],
+		)
 
 	def test_existing_child_items_reused(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
@@ -159,6 +167,7 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(source_to_item["SA-001"], "SA-001")
 		self.assertEqual(source_to_item["PART-001"], "PART-001")
 		self.assertEqual(summary["reused"], ["SA-001", "PART-001"])
+		self.assertEqual(summary["barcodes"], [])
 
 	def test_cancelled_requires_sku_and_bom(self):
 		doc = SimpleNamespace(
@@ -191,6 +200,21 @@ class TestDesignRequestItem(TestCase):
 			)
 
 		self.assertEqual(errors, [])
+
+	def test_mapping_normalizes_material_hash_spacing(self):
+		self.assertEqual(dri._normalize_mapping_value("AISI430#4"), dri._normalize_mapping_value("AISI430 #4"))
+
+	def test_generated_sku_barcode_csv_contains_only_generated_rows(self):
+		csv_content = dri._format_generated_sku_barcode_csv(
+			[
+				{"item_code": "SKU-001", "barcode": "000001", "barcode_type": "CODE-39"},
+				{"item_code": "SKU-002", "barcode": "000002", "barcode_type": "CODE-39"},
+			]
+		)
+
+		self.assertIn("Item Code,Barcode,Barcode Type", csv_content)
+		self.assertIn("SKU-001,000001,CODE-39", csv_content)
+		self.assertIn("SKU-002,000002,CODE-39", csv_content)
 
 	def test_child_bom_created_before_parent_and_fg(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
