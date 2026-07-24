@@ -11,6 +11,7 @@ import io
 import os
 import re
 import tempfile
+from urllib.parse import quote, unquote
 
 import requests
 from openpyxl import load_workbook
@@ -481,19 +482,59 @@ def _resolve_bom_workbook(design_item):
     if "docs.google.com/spreadsheets" in file_value:
         return _download_google_sheet(file_value)
 
-    file_url = file_value
-    file_doc_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    file_url = _clean_text(file_value)
+    file_doc_name = _find_bom_file_doc(file_url)
     if file_doc_name:
         file_doc = frappe.get_doc("File", file_doc_name)
         file_path = file_doc.get_full_path()
     else:
-        file_path = frappe.get_site_path(file_url.lstrip("/")) if file_url.startswith(("/files/", "/private/")) else file_url
+        file_path = _get_bom_file_path_candidates(file_url)[0]
 
     if not os.path.exists(file_path):
-        frappe.throw(_("BOM import file was not found: {0}").format(file_value))
+        for candidate in _get_bom_file_path_candidates(file_url)[1:]:
+            if os.path.exists(candidate):
+                file_path = candidate
+                break
+        else:
+            frappe.throw(_("BOM import file was not found: {0}").format(file_value))
     if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm", ".csv"):
         frappe.throw(_("Only .xlsx, .xlsm and .csv files are supported."))
     return file_path
+
+
+def _find_bom_file_doc(file_url):
+    for candidate in _get_bom_file_url_candidates(file_url):
+        file_doc_name = frappe.db.get_value("File", {"file_url": candidate}, "name")
+        if file_doc_name:
+            return file_doc_name
+
+    file_name = os.path.basename(unquote(file_url))
+    if file_name:
+        return frappe.db.get_value("File", {"file_name": file_name}, "name")
+    return None
+
+
+def _get_bom_file_url_candidates(file_url):
+    decoded_url = unquote(file_url)
+    dirname, basename = os.path.split(decoded_url)
+    encoded_url = os.path.join(dirname, quote(basename)) if basename else decoded_url
+    candidates = []
+    for candidate in (file_url, decoded_url, encoded_url):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _get_bom_file_path_candidates(file_url):
+    candidates = []
+    for candidate in _get_bom_file_url_candidates(file_url):
+        if candidate.startswith(("/files/", "/private/")):
+            path = frappe.get_site_path(candidate.lstrip("/"))
+        else:
+            path = candidate
+        if path and path not in candidates:
+            candidates.append(path)
+    return candidates or [file_url]
 
 
 def _download_google_sheet(url):
