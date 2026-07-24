@@ -121,10 +121,11 @@ class TestDesignRequestItem(TestCase):
 		parsed = {
 			"assemblies": [
 				{
+					"source_key": "row:1",
 					"source_part_no": "SA-001",
 					"part_name": "LEG TUBE ASM",
 					"uom": "Nos",
-					"components": [{"source_part_no": "PART-001", "part_name": "LEG TUBE", "uom": "Nos"}],
+					"components": [{"source_key": "row:2", "source_part_no": "PART-001", "part_name": "LEG TUBE", "uom": "Nos"}],
 				}
 			]
 		}
@@ -132,30 +133,52 @@ class TestDesignRequestItem(TestCase):
 		with patch.object(dri, "_find_mapped_item", return_value=None), \
 			patch.object(dri, "_find_existing_item", return_value=None), \
 			patch.object(dri.frappe, "has_permission", return_value=True), \
-			patch.object(dri, "_create_missing_item", side_effect=["ITEM-SA", "ITEM-PART"]), \
+			patch.object(dri, "_get_next_generated_item_code", side_effect=["000001", "000002"]), \
+			patch.object(dri, "_create_missing_item", side_effect=["000001", "000002"]), \
 			patch.object(dri, "_assign_generated_item_barcode", side_effect=["000001", "000002"]):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
 
-		self.assertEqual(source_to_item["SA-001"], "ITEM-SA")
-		self.assertEqual(source_to_item["PART-001"], "ITEM-PART")
-		self.assertEqual(summary["created"], ["ITEM-SA", "ITEM-PART"])
+		self.assertEqual(source_to_item["row:1"], "000001")
+		self.assertEqual(source_to_item["row:2"], "000002")
+		self.assertEqual(summary["created"], ["000001", "000002"])
 		self.assertEqual(
 			summary["barcodes"],
 			[
-				{"item_code": "ITEM-SA", "barcode": "000001", "barcode_type": "CODE-39"},
-				{"item_code": "ITEM-PART", "barcode": "000002", "barcode_type": "CODE-39"},
+				{"item_code": "000001", "barcode": "000001", "barcode_type": "CODE-39"},
+				{"item_code": "000002", "barcode": "000002", "barcode_type": "CODE-39"},
 			],
 		)
+
+	def test_duplicate_missing_part_names_create_distinct_generated_items(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
+		parsed = {
+			"assemblies": [
+				{"source_key": "row:5", "source_part_no": "SIDE ASM", "part_name": "SIDE ASM", "uom": "Nos", "components": []},
+				{"source_key": "row:9", "source_part_no": "SIDE ASM", "part_name": "SIDE ASM", "uom": "Nos", "components": []},
+			]
+		}
+
+		with patch.object(dri, "_find_existing_item", return_value=None), \
+			patch.object(dri.frappe, "has_permission", return_value=True), \
+			patch.object(dri, "_get_next_generated_item_code", side_effect=["000010", "000011"]), \
+			patch.object(dri, "_create_missing_item", side_effect=["000010", "000011"]), \
+			patch.object(dri, "_assign_generated_item_barcode", side_effect=["000010", "000011"]):
+			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
+
+		self.assertEqual(source_to_item["row:5"], "000010")
+		self.assertEqual(source_to_item["row:9"], "000011")
+		self.assertEqual(summary["created"], ["000010", "000011"])
 
 	def test_existing_child_items_reused(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
 		parsed = {
 			"assemblies": [
 				{
+					"source_key": "row:1",
 					"source_part_no": "SA-001",
 					"part_name": "LEG TUBE ASM",
 					"uom": "Nos",
-					"components": [{"source_part_no": "PART-001", "part_name": "LEG TUBE", "uom": "Nos"}],
+					"components": [{"source_key": "row:2", "source_part_no": "PART-001", "part_name": "LEG TUBE", "uom": "Nos"}],
 				}
 			]
 		}
@@ -164,10 +187,39 @@ class TestDesignRequestItem(TestCase):
 			patch.object(dri, "_find_existing_item", side_effect=["SA-001", "PART-001"]):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
 
-		self.assertEqual(source_to_item["SA-001"], "SA-001")
-		self.assertEqual(source_to_item["PART-001"], "PART-001")
+		self.assertEqual(source_to_item["row:1"], "SA-001")
+		self.assertEqual(source_to_item["row:2"], "PART-001")
 		self.assertEqual(summary["reused"], ["SA-001", "PART-001"])
 		self.assertEqual(summary["barcodes"], [])
+
+	def test_existing_sheet_item_reused_without_mapping_lookup(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
+		parsed = {
+			"assemblies": [
+				{
+					"source_key": "row:1",
+					"source_part_no": "SA-001",
+					"part_name": "LEG TUBE ASM",
+					"uom": "Nos",
+					"components": [
+						{
+							"source_key": "row:2",
+							"source_part_no": "P-SY-SA-0016",
+							"part_name": "SHELF CORNER CLAMP",
+							"row_type": "Sheet",
+							"uom": "Nos",
+						}
+					],
+				}
+			]
+		}
+
+		with patch.object(dri, "_find_existing_item", side_effect=["SA-001", "P-SY-SA-0016"]), \
+			patch.object(dri, "_find_mapped_item", side_effect=Exception("mapping should not be needed")):
+			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
+
+		self.assertEqual(source_to_item["row:2"], "P-SY-SA-0016")
+		self.assertEqual(summary["reused"], ["SA-001", "P-SY-SA-0016"])
 
 	def test_cancelled_requires_sku_and_bom(self):
 		doc = SimpleNamespace(
@@ -281,6 +333,46 @@ class TestDesignRequestItem(TestCase):
 			[(row["item_code"], row["qty"], row["bom_no"]) for row in captured_rows["FG-001"]],
 			[("ITEM-SA", 4, "BOM-ITEM-SA"), ("5-FST-5MM-IN-HX-NT", 2, None)],
 		)
+
+	def test_duplicate_generated_assembly_names_create_separate_boms(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
+		parsed = {
+			"assemblies": [
+				{
+					"source_key": "row:5",
+					"source_part_no": "SIDE ASM",
+					"part_name": "SIDE ASM",
+					"qty_in_fg": 1,
+					"uom": "Nos",
+					"components": [{"source_key": "row:6", "source_part_no": "SIDE PANEL", "qty": 1, "uom": "Nos", "source_row": 6}],
+				},
+				{
+					"source_key": "row:9",
+					"source_part_no": "SIDE ASM",
+					"part_name": "SIDE ASM",
+					"qty_in_fg": 1,
+					"uom": "Nos",
+					"components": [{"source_key": "row:10", "source_part_no": "SIDE PANEL", "qty": 1, "uom": "Nos", "source_row": 10}],
+				},
+			],
+			"main_components": [],
+		}
+		source_to_item = {"row:5": "000010", "row:6": "000011", "row:9": "000012", "row:10": "000013"}
+		created_for = []
+
+		def fake_bom(item_code, company, quantity, rows, is_default=0):
+			created_for.append(item_code)
+			return f"BOM-{item_code}", False
+
+		with patch.object(dri, "_get_default_bom", return_value=None), \
+			patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "bom_no": child}), \
+			patch.object(dri, "_get_or_create_submitted_bom", side_effect=fake_bom):
+			assembly_boms, summary = dri._create_bom_hierarchy(design_item, parsed, source_to_item)
+
+		self.assertEqual(created_for, ["000010", "000012", "FG-001"])
+		self.assertEqual(assembly_boms["row:5"], "BOM-000010")
+		self.assertEqual(assembly_boms["row:9"], "BOM-000012")
+		self.assertIn("BOM-FG-001", summary["created"])
 
 	def test_sheet_rows_create_child_boms_from_mapped_raw_material(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
