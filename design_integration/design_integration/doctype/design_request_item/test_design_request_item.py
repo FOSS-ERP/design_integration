@@ -458,6 +458,22 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertIn("/site/private/files/FOURE BURNER-csv (1)241cc0.csv", candidates)
 
+	def test_find_bom_file_by_name_checks_private_and_public_files(self):
+		with tempfile.TemporaryDirectory() as tmpdir:
+			private_files = os.path.join(tmpdir, "private", "files")
+			public_files = os.path.join(tmpdir, "public", "files")
+			os.makedirs(private_files)
+			os.makedirs(public_files)
+			expected_path = os.path.join(private_files, "FOURE BURNER-csv (1)241cc0.csv")
+			with open(expected_path, "w", encoding="utf-8") as handle:
+				handle.write("x")
+
+			with patch.object(dri.frappe, "get_site_path", side_effect=lambda path: os.path.join(tmpdir, path)):
+				self.assertEqual(
+					dri._find_bom_file_by_name("/private/files/FOURE%20BURNER-csv%20%281%29241cc0.csv"),
+					expected_path,
+				)
+
 	def test_final_fg_bom_signature_links_to_design_item_code(self):
 		row = dri._bom_signature([{"item_code": "FG-001", "qty": 1, "uom": "Nos", "bom_no": "BOM-SA"}])
 

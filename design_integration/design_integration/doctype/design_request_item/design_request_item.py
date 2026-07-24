@@ -490,13 +490,21 @@ def _resolve_bom_workbook(design_item):
     else:
         file_path = _get_bom_file_path_candidates(file_url)[0]
 
+    file_path_candidates = _get_bom_file_path_candidates(file_url)
     if not os.path.exists(file_path):
-        for candidate in _get_bom_file_path_candidates(file_url)[1:]:
+        for candidate in file_path_candidates[1:]:
             if os.path.exists(candidate):
                 file_path = candidate
                 break
         else:
-            frappe.throw(_("BOM import file was not found: {0}").format(file_value))
+            file_path = _find_bom_file_by_name(file_url)
+            if not file_path:
+                frappe.throw(
+                    _("BOM import file was not found: {0}<br>Checked paths:<br>{1}").format(
+                        file_value,
+                        "<br>".join(file_path_candidates),
+                    )
+                )
     if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm", ".csv"):
         frappe.throw(_("Only .xlsx, .xlsm and .csv files are supported."))
     return file_path
@@ -535,6 +543,25 @@ def _get_bom_file_path_candidates(file_url):
         if path and path not in candidates:
             candidates.append(path)
     return candidates or [file_url]
+
+
+def _find_bom_file_by_name(file_url):
+    target = _normalize_file_lookup_name(os.path.basename(unquote(file_url)))
+    if not target:
+        return None
+
+    for folder in ("private/files", "public/files"):
+        folder_path = frappe.get_site_path(folder)
+        if not os.path.isdir(folder_path):
+            continue
+        for file_name in os.listdir(folder_path):
+            if _normalize_file_lookup_name(file_name) == target:
+                return os.path.join(folder_path, file_name)
+    return None
+
+
+def _normalize_file_lookup_name(file_name):
+    return re.sub(r"\s+", " ", unquote(_clean_text(file_name))).strip().lower()
 
 
 def _download_google_sheet(url):
