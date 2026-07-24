@@ -586,6 +586,7 @@ def _parse_table_rows(table):
 
         if _is_main_assembly_row(row_type, row_values):
             main_components.append({
+                "source_key": _make_row_source_key(source_row),
                 "source_row": source_row,
                 "source_part_no": part_no,
                 "erp_item_code": erp_item_code,
@@ -604,6 +605,7 @@ def _parse_table_rows(table):
 
         if _is_sub_assembly_row(row_type, row_values):
             current = {
+                "source_key": _make_row_source_key(source_row),
                 "source_row": source_row,
                 "source_part_no": part_no,
                 "erp_item_code": erp_item_code,
@@ -624,6 +626,7 @@ def _parse_table_rows(table):
 
         if current:
             current["components"].append({
+                "source_key": _make_row_source_key(source_row),
                 "source_row": source_row,
                 "source_part_no": part_no,
                 "erp_item_code": erp_item_code,
@@ -640,6 +643,10 @@ def _parse_table_rows(table):
             })
 
     return {"assemblies": assemblies, "main_components": main_components, "rows": rows}
+
+
+def _make_row_source_key(source_row):
+    return f"row:{source_row}"
 
 
 def _detect_header(table):
@@ -788,16 +795,21 @@ def _track_duplicate_source(row, seen, errors):
 
 
 def _build_dependency_graph(parsed):
-    assembly_sources = {assembly["source_part_no"] for assembly in parsed["assemblies"] if assembly["source_part_no"]}
-    graph = {source: set() for source in assembly_sources}
+    assembly_by_part_no = {}
     for assembly in parsed["assemblies"]:
-        parent = assembly["source_part_no"]
+        if assembly.get("source_part_no"):
+            assembly_by_part_no.setdefault(assembly["source_part_no"], []).append(_get_source_key(assembly))
+
+    graph = {_get_source_key(assembly): set() for assembly in parsed["assemblies"]}
+    for assembly in parsed["assemblies"]:
+        parent = _get_source_key(assembly)
         if not parent:
             continue
         for component in assembly["components"]:
-            child = component["source_part_no"]
-            if child in assembly_sources:
-                graph[parent].add(child)
+            matching_assemblies = assembly_by_part_no.get(component.get("source_part_no")) or []
+            if len(matching_assemblies) == 1:
+                component["assembly_source_key"] = matching_assemblies[0]
+                graph[parent].add(matching_assemblies[0])
     return graph
 
 
@@ -839,23 +851,24 @@ def _resolve_or_create_items(design_item, parsed):
     rows.extend((component, False) for component in parsed.get("main_components", []))
 
     for row, is_assembly in rows:
-        key = row.get("source_part_no") or row.get("part_name")
+        key = _get_source_key(row)
         if key in source_to_item:
+            continue
+        item_code = _find_existing_item(row)
+        if item_code:
+            source_to_item[key] = item_code
+            summary["reused"].append(item_code)
             continue
         if not is_assembly:
             mapping = _find_mapped_item(row)
             if mapping:
                 row["raw_material_item_code"] = mapping.get("erp_item")
                 row["raw_material_density"] = flt(mapping.get("material_density"))
-        item_code = _find_existing_item(row)
-        if item_code:
-            source_to_item[key] = item_code
-            summary["reused"].append(item_code)
-            continue
         if not frappe.has_permission("Item", "create"):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
-        item_code = _create_missing_item(design_item, row, is_assembly)
-        barcode = _assign_generated_item_barcode(item_code)
+        generated_item_code = _get_next_generated_item_code()
+        item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
+        barcode = _assign_generated_item_barcode(item_code, preferred_barcode=generated_item_code)
         source_to_item[key] = item_code
         summary["created"].append(item_code)
         summary["barcodes"].append(
@@ -866,6 +879,10 @@ def _resolve_or_create_items(design_item, parsed):
             }
         )
     return source_to_item, summary
+
+
+def _get_source_key(row):
+    return row.get("source_key") or row.get("source_part_no") or row.get("part_name")
 
 
 def _find_mapped_item(row):
@@ -955,7 +972,7 @@ def _get_engineering_reference_field():
     return None
 
 
-def _create_missing_item(design_item, row, is_assembly):
+def _create_missing_item(design_item, row, is_assembly, generated_item_code=None):
     uom = _get_generated_item_uom(design_item, row, is_assembly)
     if not uom:
         frappe.throw(_("Row {0}: UOM is required to create missing Item.").format(row.get("source_row")))
@@ -963,6 +980,8 @@ def _create_missing_item(design_item, row, is_assembly):
         frappe.throw(_("Row {0}: UOM {1} does not exist.").format(row.get("source_row"), uom))
 
     item = frappe.new_doc("Item")
+    if generated_item_code:
+        item.item_code = generated_item_code
     item.item_name = row.get("part_name") or row.get("source_part_no")
     item.description = row.get("part_name") or row.get("source_part_no")
     item.item_group = _get_default_item_group(design_item, is_assembly)
@@ -974,11 +993,11 @@ def _create_missing_item(design_item, row, is_assembly):
             item.gst_hsn_code = hsn_code
 
     engineering_field = _get_engineering_reference_field()
-    if engineering_field and row.get("source_part_no"):
+    if engineering_field and row.get("source_part_no") and row.get("source_part_no") != item.item_name:
         item.set(engineering_field, row.get("source_part_no"))
 
     item.insert()
-    desired_item_code = _clean_text(row.get("source_part_no"))
+    desired_item_code = _clean_text(generated_item_code or row.get("source_part_no"))
     if desired_item_code and item.name != desired_item_code and not frappe.db.exists("Item", desired_item_code):
         frappe.rename_doc("Item", item.name, desired_item_code, force=True)
         item.name = desired_item_code
@@ -986,7 +1005,7 @@ def _create_missing_item(design_item, row, is_assembly):
     return item.name
 
 
-def _assign_generated_item_barcode(item_code):
+def _assign_generated_item_barcode(item_code, preferred_barcode=None):
     existing_barcode = frappe.db.get_value(
         "Item Barcode",
         {"parent": item_code, "barcode_type": GENERATED_BARCODE_TYPE},
@@ -996,8 +1015,10 @@ def _assign_generated_item_barcode(item_code):
         return existing_barcode
 
     item = frappe.get_doc("Item", item_code)
+    attempted = set()
     for _attempt in range(100):
-        barcode = _get_next_generated_barcode()
+        barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
+        attempted.add(barcode)
         if frappe.db.exists("Item Barcode", {"barcode": barcode}):
             continue
 
@@ -1019,13 +1040,29 @@ def _assign_generated_item_barcode(item_code):
     frappe.throw(_("Could not generate a unique 6 digit barcode for Item {0}.").format(item_code))
 
 
+def _get_next_generated_item_code():
+    for _attempt in range(100):
+        item_code = _get_next_generated_barcode()
+        if frappe.db.exists("Item", item_code) or frappe.db.exists("Item Barcode", {"barcode": item_code}):
+            continue
+        return item_code
+    frappe.throw(_("Could not generate a unique 6 digit Item Code."))
+
+
 def _get_next_generated_barcode():
     result = frappe.db.sql(
         """
-        select barcode
-        from `tabItem Barcode`
-        where barcode regexp '^[0-9]{6}$'
-        order by barcode desc
+        select code
+        from (
+            select barcode as code
+            from `tabItem Barcode`
+            where barcode regexp '^[0-9]{6}$'
+            union
+            select item_code as code
+            from `tabItem`
+            where item_code regexp '^[0-9]{6}$'
+        ) generated_codes
+        order by code desc
         limit 1
         """
     )
@@ -1054,15 +1091,15 @@ def _get_default_item_group(design_item, is_assembly):
 
 def _create_bom_hierarchy(design_item, parsed, source_to_item):
     graph = _build_dependency_graph(parsed)
-    assembly_map = {assembly["source_part_no"]: assembly for assembly in parsed["assemblies"] if assembly["source_part_no"]}
+    assembly_map = {_get_source_key(assembly): assembly for assembly in parsed["assemblies"]}
     assembly_boms = {}
     component_boms = {}
     summary = {"created": [], "reused": []}
 
     def make_component_row(component):
-        component_key = component.get("source_part_no") or component.get("part_name")
+        component_key = _get_source_key(component)
         component_item = source_to_item[component_key]
-        child_bom = assembly_boms.get(component.get("source_part_no")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
+        child_bom = assembly_boms.get(component.get("assembly_source_key")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
         if component.get("raw_material_item_code") and not child_bom:
             child_bom, reused = _create_sheet_component_bom(design_item, component_item, component)
             component_boms[component_key] = child_bom
@@ -1095,7 +1132,7 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
         return bom_name
 
     child_sources = {child for children in graph.values() for child in children}
-    top_level_sources = [assembly["source_part_no"] for assembly in parsed["assemblies"] if assembly["source_part_no"] not in child_sources]
+    top_level_sources = [_get_source_key(assembly) for assembly in parsed["assemblies"] if _get_source_key(assembly) not in child_sources]
     for source in top_level_sources:
         build_for(source)
 
