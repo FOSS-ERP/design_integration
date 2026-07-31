@@ -640,6 +640,8 @@ def _parse_table_rows(table):
 
         part_no = _clean_text(row_values.get("part_no"))
         part_name = _clean_text(row_values.get("part_description")) or _clean_text(row_values.get("part_name")) or part_no
+        if not part_no:
+            part_no, part_name = _use_existing_item_code_from_part_name(part_no, part_name)
         erp_item_code = _clean_text(row_values.get("erp_item_code"))
         qty = flt(row_values.get("qty"))
         uom = _clean_text(row_values.get("uom"))
@@ -715,6 +717,18 @@ def _parse_table_rows(table):
 
 def _make_row_source_key(source_row):
     return f"row:{source_row}"
+
+
+def _use_existing_item_code_from_part_name(part_no, part_name):
+    if not part_name:
+        return part_no, part_name
+    try:
+        item_name = frappe.db.get_value("Item", part_name, "item_name")
+    except Exception:
+        item_name = None
+    if item_name:
+        return part_name, item_name
+    return part_no, part_name
 
 
 def _detect_header(table):
@@ -813,6 +827,13 @@ def _validate_bom_structure(design_item, parsed):
         _validate_row_identity(assembly, "Sub-assembly", errors)
         if flt(assembly["qty_in_fg"]) <= 0:
             errors.append(_("Row {0}: sub-assembly quantity must be greater than zero.").format(assembly["source_row"]))
+        if not assembly.get("components"):
+            errors.append(
+                _("Row {0}: sub-assembly {1} has no components. Add component rows below it or remove this SUB ASSY row.").format(
+                    assembly["source_row"],
+                    assembly.get("source_part_no") or assembly.get("part_name") or "",
+                )
+            )
         if assembly["source_part_no"] == fg_item_code:
             errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(assembly["source_row"]))
         _track_duplicate_source(assembly, seen, errors)
@@ -820,7 +841,7 @@ def _validate_bom_structure(design_item, parsed):
             _validate_row_identity(component, "Component", errors)
             if flt(component["qty"]) <= 0:
                 errors.append(_("Row {0}: component quantity must be greater than zero.").format(component["source_row"]))
-            if component["source_part_no"] == assembly["source_part_no"]:
+            if component["source_part_no"] and assembly["source_part_no"] and component["source_part_no"] == assembly["source_part_no"]:
                 errors.append(_("Row {0}: assembly cannot contain itself.").format(component["source_row"]))
             if component["source_part_no"] == fg_item_code:
                 errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(component["source_row"]))
@@ -936,7 +957,11 @@ def _resolve_or_create_items(design_item, parsed):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
         generated_item_code = _get_next_generated_item_code()
         item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
-        barcode = _assign_generated_item_barcode(item_code, preferred_barcode=generated_item_code)
+        barcode = _assign_generated_item_barcode(
+            item_code,
+            preferred_barcode=None if is_assembly else generated_item_code,
+            is_assembly=is_assembly,
+        )
         source_to_item[key] = item_code
         summary["created"].append(item_code)
         summary["barcodes"].append(
@@ -1073,7 +1098,7 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
     return item.name
 
 
-def _assign_generated_item_barcode(item_code, preferred_barcode=None):
+def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembly=False):
     existing_barcode = frappe.db.get_value(
         "Item Barcode",
         {"parent": item_code, "barcode_type": GENERATED_BARCODE_TYPE},
@@ -1085,7 +1110,10 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None):
     item = frappe.get_doc("Item", item_code)
     attempted = set()
     for _attempt in range(100):
-        barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
+        if is_assembly:
+            barcode = _get_next_generated_sub_assembly_barcode()
+        else:
+            barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
         attempted.add(barcode)
         if frappe.db.exists("Item Barcode", {"barcode": barcode}):
             continue
@@ -1105,6 +1133,8 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None):
             item.set("barcodes", [row for row in item.get("barcodes") if row.get("barcode") != barcode])
             item.reload()
 
+    if is_assembly:
+        frappe.throw(_("Could not generate a unique SUB barcode for Item {0}.").format(item_code))
     frappe.throw(_("Could not generate a unique 6 digit barcode for Item {0}.").format(item_code))
 
 
@@ -1138,6 +1168,29 @@ def _get_next_generated_barcode():
     if next_number > 999999:
         frappe.throw(_("No 6 digit barcode numbers are available."))
     return f"{next_number:06d}"
+
+
+def _get_next_generated_sub_assembly_barcode():
+    result = frappe.db.sql(
+        """
+        select code
+        from (
+            select barcode as code
+            from `tabItem Barcode`
+            where barcode regexp '^SUB[0-9]{5}$'
+            union
+            select item_code as code
+            from `tabItem`
+            where item_code regexp '^SUB[0-9]{5}$'
+        ) generated_codes
+        order by code desc
+        limit 1
+        """
+    )
+    next_number = (int(result[0][0][3:]) + 1) if result else 1
+    if next_number > 99999:
+        frappe.throw(_("No SUB barcode numbers are available."))
+    return f"SUB{next_number:05d}"
 
 
 def _get_generated_item_uom(design_item, row, is_assembly):
