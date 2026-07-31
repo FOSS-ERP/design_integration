@@ -11,6 +11,7 @@ import io
 import os
 import re
 import tempfile
+from urllib.parse import quote, unquote
 
 import requests
 from openpyxl import load_workbook
@@ -481,19 +482,86 @@ def _resolve_bom_workbook(design_item):
     if "docs.google.com/spreadsheets" in file_value:
         return _download_google_sheet(file_value)
 
-    file_url = file_value
-    file_doc_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    file_url = _clean_text(file_value)
+    file_doc_name = _find_bom_file_doc(file_url)
     if file_doc_name:
         file_doc = frappe.get_doc("File", file_doc_name)
         file_path = file_doc.get_full_path()
     else:
-        file_path = frappe.get_site_path(file_url.lstrip("/")) if file_url.startswith(("/files/", "/private/")) else file_url
+        file_path = _get_bom_file_path_candidates(file_url)[0]
 
+    file_path_candidates = _get_bom_file_path_candidates(file_url)
     if not os.path.exists(file_path):
-        frappe.throw(_("BOM import file was not found: {0}").format(file_value))
+        for candidate in file_path_candidates[1:]:
+            if os.path.exists(candidate):
+                file_path = candidate
+                break
+        else:
+            file_path = _find_bom_file_by_name(file_url)
+            if not file_path:
+                frappe.throw(
+                    _("BOM import file was not found: {0}<br>Checked paths:<br>{1}").format(
+                        file_value,
+                        "<br>".join(file_path_candidates),
+                    )
+                )
     if os.path.splitext(file_path)[1].lower() not in (".xlsx", ".xlsm", ".csv"):
         frappe.throw(_("Only .xlsx, .xlsm and .csv files are supported."))
     return file_path
+
+
+def _find_bom_file_doc(file_url):
+    for candidate in _get_bom_file_url_candidates(file_url):
+        file_doc_name = frappe.db.get_value("File", {"file_url": candidate}, "name")
+        if file_doc_name:
+            return file_doc_name
+
+    file_name = os.path.basename(unquote(file_url))
+    if file_name:
+        return frappe.db.get_value("File", {"file_name": file_name}, "name")
+    return None
+
+
+def _get_bom_file_url_candidates(file_url):
+    decoded_url = unquote(file_url)
+    dirname, basename = os.path.split(decoded_url)
+    encoded_url = os.path.join(dirname, quote(basename)) if basename else decoded_url
+    candidates = []
+    for candidate in (file_url, decoded_url, encoded_url):
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
+
+
+def _get_bom_file_path_candidates(file_url):
+    candidates = []
+    for candidate in _get_bom_file_url_candidates(file_url):
+        if candidate.startswith(("/files/", "/private/")):
+            path = frappe.get_site_path(candidate.lstrip("/"))
+        else:
+            path = candidate
+        if path and path not in candidates:
+            candidates.append(path)
+    return candidates or [file_url]
+
+
+def _find_bom_file_by_name(file_url):
+    target = _normalize_file_lookup_name(os.path.basename(unquote(file_url)))
+    if not target:
+        return None
+
+    for folder in ("private/files", "public/files"):
+        folder_path = frappe.get_site_path(folder)
+        if not os.path.isdir(folder_path):
+            continue
+        for file_name in os.listdir(folder_path):
+            if _normalize_file_lookup_name(file_name) == target:
+                return os.path.join(folder_path, file_name)
+    return None
+
+
+def _normalize_file_lookup_name(file_name):
+    return re.sub(r"\s+", " ", unquote(_clean_text(file_name))).strip().lower()
 
 
 def _download_google_sheet(url):
@@ -572,6 +640,8 @@ def _parse_table_rows(table):
 
         part_no = _clean_text(row_values.get("part_no"))
         part_name = _clean_text(row_values.get("part_description")) or _clean_text(row_values.get("part_name")) or part_no
+        if not part_no:
+            part_no, part_name = _use_existing_item_code_from_part_name(part_no, part_name)
         erp_item_code = _clean_text(row_values.get("erp_item_code"))
         qty = flt(row_values.get("qty"))
         uom = _clean_text(row_values.get("uom"))
@@ -647,6 +717,18 @@ def _parse_table_rows(table):
 
 def _make_row_source_key(source_row):
     return f"row:{source_row}"
+
+
+def _use_existing_item_code_from_part_name(part_no, part_name):
+    if not part_name:
+        return part_no, part_name
+    try:
+        item_name = frappe.db.get_value("Item", part_name, "item_name")
+    except Exception:
+        item_name = None
+    if item_name:
+        return part_name, item_name
+    return part_no, part_name
 
 
 def _detect_header(table):
@@ -745,6 +827,13 @@ def _validate_bom_structure(design_item, parsed):
         _validate_row_identity(assembly, "Sub-assembly", errors)
         if flt(assembly["qty_in_fg"]) <= 0:
             errors.append(_("Row {0}: sub-assembly quantity must be greater than zero.").format(assembly["source_row"]))
+        if not assembly.get("components"):
+            errors.append(
+                _("Row {0}: sub-assembly {1} has no components. Add component rows below it or remove this SUB ASSY row.").format(
+                    assembly["source_row"],
+                    assembly.get("source_part_no") or assembly.get("part_name") or "",
+                )
+            )
         if assembly["source_part_no"] == fg_item_code:
             errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(assembly["source_row"]))
         _track_duplicate_source(assembly, seen, errors)
@@ -752,7 +841,7 @@ def _validate_bom_structure(design_item, parsed):
             _validate_row_identity(component, "Component", errors)
             if flt(component["qty"]) <= 0:
                 errors.append(_("Row {0}: component quantity must be greater than zero.").format(component["source_row"]))
-            if component["source_part_no"] == assembly["source_part_no"]:
+            if component["source_part_no"] and assembly["source_part_no"] and component["source_part_no"] == assembly["source_part_no"]:
                 errors.append(_("Row {0}: assembly cannot contain itself.").format(component["source_row"]))
             if component["source_part_no"] == fg_item_code:
                 errors.append(_("Row {0}: FG item cannot be listed as its own child.").format(component["source_row"]))
@@ -868,7 +957,11 @@ def _resolve_or_create_items(design_item, parsed):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
         generated_item_code = _get_next_generated_item_code()
         item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
-        barcode = _assign_generated_item_barcode(item_code, preferred_barcode=generated_item_code)
+        barcode = _assign_generated_item_barcode(
+            item_code,
+            preferred_barcode=None if is_assembly else generated_item_code,
+            is_assembly=is_assembly,
+        )
         source_to_item[key] = item_code
         summary["created"].append(item_code)
         summary["barcodes"].append(
@@ -1005,7 +1098,7 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
     return item.name
 
 
-def _assign_generated_item_barcode(item_code, preferred_barcode=None):
+def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembly=False):
     existing_barcode = frappe.db.get_value(
         "Item Barcode",
         {"parent": item_code, "barcode_type": GENERATED_BARCODE_TYPE},
@@ -1017,7 +1110,10 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None):
     item = frappe.get_doc("Item", item_code)
     attempted = set()
     for _attempt in range(100):
-        barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
+        if is_assembly:
+            barcode = _get_next_generated_sub_assembly_barcode()
+        else:
+            barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
         attempted.add(barcode)
         if frappe.db.exists("Item Barcode", {"barcode": barcode}):
             continue
@@ -1037,6 +1133,8 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None):
             item.set("barcodes", [row for row in item.get("barcodes") if row.get("barcode") != barcode])
             item.reload()
 
+    if is_assembly:
+        frappe.throw(_("Could not generate a unique SUB barcode for Item {0}.").format(item_code))
     frappe.throw(_("Could not generate a unique 6 digit barcode for Item {0}.").format(item_code))
 
 
@@ -1070,6 +1168,29 @@ def _get_next_generated_barcode():
     if next_number > 999999:
         frappe.throw(_("No 6 digit barcode numbers are available."))
     return f"{next_number:06d}"
+
+
+def _get_next_generated_sub_assembly_barcode():
+    result = frappe.db.sql(
+        """
+        select code
+        from (
+            select barcode as code
+            from `tabItem Barcode`
+            where barcode regexp '^SUB[0-9]{5}$'
+            union
+            select item_code as code
+            from `tabItem`
+            where item_code regexp '^SUB[0-9]{5}$'
+        ) generated_codes
+        order by code desc
+        limit 1
+        """
+    )
+    next_number = (int(result[0][0][3:]) + 1) if result else 1
+    if next_number > 99999:
+        frappe.throw(_("No SUB barcode numbers are available."))
+    return f"SUB{next_number:05d}"
 
 
 def _get_generated_item_uom(design_item, row, is_assembly):
