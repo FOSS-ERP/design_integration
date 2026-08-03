@@ -955,11 +955,11 @@ def _resolve_or_create_items(design_item, parsed):
                 row["raw_material_density"] = flt(mapping.get("material_density"))
         if not frappe.has_permission("Item", "create"):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
-        generated_item_code = _get_next_generated_item_code()
+        generated_item_code = _get_next_generated_sub_assembly_code() if is_assembly else _get_next_generated_item_code()
         item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
         barcode = _assign_generated_item_barcode(
             item_code,
-            preferred_barcode=None if is_assembly else generated_item_code,
+            preferred_barcode=generated_item_code,
             is_assembly=is_assembly,
         )
         source_to_item[key] = item_code
@@ -1111,7 +1111,7 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembl
     attempted = set()
     for _attempt in range(100):
         if is_assembly:
-            barcode = _get_next_generated_sub_assembly_barcode()
+            barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_sub_assembly_barcode()
         else:
             barcode = preferred_barcode if preferred_barcode and preferred_barcode not in attempted else _get_next_generated_barcode()
         attempted.add(barcode)
@@ -1145,6 +1145,15 @@ def _get_next_generated_item_code():
             continue
         return item_code
     frappe.throw(_("Could not generate a unique 6 digit Item Code."))
+
+
+def _get_next_generated_sub_assembly_code():
+    for _attempt in range(100):
+        item_code = _get_next_generated_sub_assembly_barcode()
+        if frappe.db.exists("Item", item_code) or frappe.db.exists("Item Barcode", {"barcode": item_code}):
+            continue
+        return item_code
+    frappe.throw(_("Could not generate a unique SUB Item Code."))
 
 
 def _get_next_generated_barcode():
