@@ -403,10 +403,11 @@ def _set_generated_sku_barcode_log(design_item_name, barcode_rows):
         value = ""
     else:
         value = "\n".join(
-            "{item_code}\t{barcode}\t{barcode_type}".format(
+            "{item_code}\t{barcode}\t{barcode_type}\t{item_name}".format(
                 item_code=row.get("item_code"),
                 barcode=row.get("barcode"),
                 barcode_type=row.get("barcode_type"),
+                item_name=row.get("item_name"),
             )
             for row in barcode_rows
         )
@@ -451,9 +452,9 @@ def _attach_generated_sku_barcode_sheet(design_item_name, barcode_rows):
 def _format_generated_sku_barcode_csv(barcode_rows):
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(["Item Code", "Barcode", "Barcode Type"])
+    writer.writerow(["Item Code", "Barcode", "Barcode Type", "Item Name"])
     for row in barcode_rows:
-        writer.writerow([row.get("item_code"), row.get("barcode"), row.get("barcode_type")])
+        writer.writerow([row.get("item_code"), row.get("barcode"), row.get("barcode_type"), row.get("item_name")])
     return output.getvalue()
 
 
@@ -969,6 +970,7 @@ def _resolve_or_create_items(design_item, parsed):
                 "item_code": item_code,
                 "barcode": barcode,
                 "barcode_type": GENERATED_BARCODE_TYPE,
+                "item_name": row.get("part_name") or frappe.db.get_value("Item", item_code, "item_name"),
             }
         )
     return source_to_item, summary
