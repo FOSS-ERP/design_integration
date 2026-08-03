@@ -102,9 +102,11 @@ frappe.ui.form.on("Design Request Item", {
         // Update current stage when design status changes
         frm.set_value("current_stage", frm.doc.design_status);
         toggle_status_fields(frm);
+        addBomImportButton(frm);
         // Auto-save when design status changes
         if (frm.doc.design_status) {
             frm.save(null, function() {
+                addBomImportButton(frm);
                 frappe.show_alert({
                     message: __("Status updated and saved automatically"),
                     indicator: "green"
@@ -488,8 +490,12 @@ function addCustomButtons(frm) {
 
 function addBomImportButton(frm) {
     const is_bom_stage = [frm.doc.design_status, frm.doc.current_stage].includes('BOM');
-    if (frm.is_new() || !is_bom_stage) {
+    if (!is_bom_stage) {
         return;
+    }
+
+    if (frm.remove_custom_button) {
+        frm.remove_custom_button(__('Generate BOM from Sheet'), __('Actions'));
     }
 
     frm.add_custom_button(__('Generate BOM from Sheet'), function() {
@@ -519,6 +525,15 @@ function addBomImportFieldButton(frm) {
 }
 
 function generateBomFromSheet(frm) {
+    if (frm.is_dirty()) {
+        frappe.msgprint({
+            title: __('Save Required'),
+            message: __('Please save the Design Request Item before generating BOM.'),
+            indicator: 'orange'
+        });
+        return;
+    }
+
     const bom_import_file = frm.doc.custom_bom_for_import || frm.doc.custom_bom_importer;
     const missing = [];
     if (!frm.doc.new_item_code) {
