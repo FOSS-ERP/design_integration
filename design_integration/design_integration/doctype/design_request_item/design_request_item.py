@@ -1017,7 +1017,7 @@ def _find_mapped_item(row):
         )
         return matches[0]
 
-    if has_description_mapping:
+    if has_description_mapping or _is_sheet_row(row):
         frappe.throw(
             _("Row {0}: No Design BOM Item Mapping found for DESCRIPTION {1}, Sheet Metal Thickness {2}, Material {3}.").format(
                 row.get("source_row"),
@@ -1027,6 +1027,10 @@ def _find_mapped_item(row):
             )
         )
     return None
+
+
+def _is_sheet_row(row):
+    return _normalize_mapping_value(row.get("row_type")) in {"sheet", "sheets"}
 
 
 def _normalize_mapping_value(value):
@@ -1082,6 +1086,8 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
     item.item_group = _get_default_item_group(design_item, is_assembly)
     item.stock_uom = uom
     item.is_stock_item = 1
+    if _is_sheet_row(row) and frappe.get_meta("Item").has_field("is_sub_contracted_item"):
+        item.is_sub_contracted_item = 1
     if frappe.get_meta("Item").has_field("gst_hsn_code"):
         hsn_code = frappe.db.get_value("Item", _get_finished_good_item_code(design_item), "gst_hsn_code")
         if hsn_code:
