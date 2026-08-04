@@ -253,8 +253,8 @@ def get_design_request_items(sales_order):
         items = []
         
         for idx, item in enumerate(sales_order_doc.items, 1):
-            item_group = frappe.get_value("Item", item.item_code, "item_group")
-            if item_group != "Fabricated Equipment":
+            is_stock_item = frappe.get_value("Item", item.item_code, "is_stock_item")
+            if not is_stock_item:
                 continue
 
             used_qty = frappe.db.sql("""
@@ -336,6 +336,9 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
                 continue
 
             so_item = frappe.get_doc("Sales Order Item", row["so_detail"])
+            is_stock_item = frappe.get_value("Item", so_item.item_code, "is_stock_item")
+            if not is_stock_item:
+                frappe.throw(f"Design Request can only be created for stock items. Item {so_item.item_code} is not maintained in stock.")
 
             frappe.db.sql(
                     "SELECT name FROM `tabSales Order Item` WHERE name = %s FOR UPDATE",
