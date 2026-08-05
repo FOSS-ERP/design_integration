@@ -22,7 +22,109 @@ def create_custom_fields_on_migrate():
                 "read_only": 1
             }
         ],
+        "Purchase Order": [
+            {
+                "fieldname": "custom_subcontract_service_section",
+                "label": "Subcontract Service Item Update",
+                "fieldtype": "Section Break",
+                "insert_after": "scan_barcode",
+                "depends_on": "eval:doc.is_subcontracted",
+            },
+            {
+                "fieldname": "custom_subcontract_service_item",
+                "label": "Item Code",
+                "fieldtype": "Link",
+                "options": "Item",
+                "insert_after": "custom_subcontract_service_section",
+            },
+            {
+                "fieldname": "custom_subcontract_service_column",
+                "fieldtype": "Column Break",
+                "insert_after": "custom_subcontract_service_item",
+            },
+            {
+                "fieldname": "custom_subcontract_service_rate",
+                "label": "Rate",
+                "fieldtype": "Currency",
+                "insert_after": "custom_subcontract_service_column",
+            },
+            {
+                "fieldname": "custom_apply_subcontract_service",
+                "label": "Apply",
+                "fieldtype": "Button",
+                "insert_after": "custom_subcontract_service_rate",
+            },
+        ],
+        "Production Plan": [
+            {
+                "fieldname": "custom_sub_assembly_filter_section",
+                "label": "Sub Assembly Filters",
+                "fieldtype": "Section Break",
+                "insert_after": "section_break_24",
+            },
+            {
+                "fieldname": "custom_sub_assembly_item_name_filter",
+                "label": "Item Name",
+                "fieldtype": "Data",
+                "insert_after": "custom_sub_assembly_filter_section",
+            },
+            {
+                "fieldname": "custom_sub_assembly_filter_column",
+                "fieldtype": "Column Break",
+                "insert_after": "custom_sub_assembly_item_name_filter",
+            },
+            {
+                "fieldname": "custom_sub_assembly_manufacturing_type",
+                "label": "Manufacturing Type",
+                "fieldtype": "Select",
+                "options": "\nIn House\nSubcontract\nMaterial Request",
+                "insert_after": "custom_sub_assembly_filter_column",
+            },
+            {
+                "fieldname": "custom_sub_assembly_supplier",
+                "label": "Supplier",
+                "fieldtype": "Link",
+                "options": "Supplier",
+                "insert_after": "custom_sub_assembly_manufacturing_type",
+                "depends_on": "eval:doc.custom_sub_assembly_manufacturing_type == 'Subcontract'",
+            },
+            {
+                "fieldname": "custom_apply_sub_assembly_updates",
+                "label": "Apply",
+                "fieldtype": "Button",
+                "insert_after": "custom_sub_assembly_supplier",
+            },
+        ],
+        "Stock Entry": [
+            {
+                "fieldname": "custom_subcontract_summary_section",
+                "label": "Subcontract Item Summary",
+                "fieldtype": "Section Break",
+                "insert_after": "scan_barcode",
+                "depends_on": "eval:doc.purpose == 'Send to Subcontractor'",
+            },
+            {
+                "fieldname": "custom_subcontract_item_summary",
+                "label": "Item Summary",
+                "fieldtype": "HTML",
+                "insert_after": "custom_subcontract_summary_section",
+            },
+            {
+                "fieldname": "custom_apply_subcontract_item_summary",
+                "label": "Make Changes",
+                "fieldtype": "Button",
+                "insert_after": "custom_subcontract_item_summary",
+                "depends_on": "eval:doc.purpose == 'Send to Subcontractor'",
+            },
+        ],
         "Design Request Item": [
+            {
+                "fieldname": "custom_bom_importer",
+                "label": "BOM Import Sheet",
+                "fieldtype": "Attach",
+                "insert_after": "bom_created",
+                "depends_on": "eval:doc.design_status == 'BOM'",
+            },
             {
                 "fieldname": "custom_bom_import_status",
                 "label": "BOM Import Status",

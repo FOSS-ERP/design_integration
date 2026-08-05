@@ -21,8 +21,11 @@ app_include_js = [
 ]
 
 doctype_js = {
-        "Project" : "public/js/project.js",
-    }
+    "Project": "public/js/project.js",
+    "Purchase Order": "public/js/purchase_order.js",
+    "Production Plan": "public/js/production_plan.js",
+    "Stock Entry": "public/js/stock_entry.js",
+}
 
 # Include CSS files
 app_include_css = [
