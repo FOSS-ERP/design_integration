@@ -1310,6 +1310,7 @@ def _create_sheet_component_bom(design_item, item_code, component):
         quantity=1,
         rows=rows,
         is_default=1,
+        scrap_rows=[{"item_code": raw_material_item, "stock_qty": 1}],
     )
 
 
@@ -1371,7 +1372,8 @@ def _get_conversion_factor(item_code, source_uom, stock_uom, source_row):
     return flt(factor)
 
 
-def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=0):
+def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=0, scrap_rows=None):
+    scrap_rows = scrap_rows or []
     existing_boms = frappe.get_all(
         "BOM",
         filters={"item": item_code, "company": company, "docstatus": ["in", [0, 1]]},
@@ -1379,9 +1381,10 @@ def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=
         order_by="docstatus desc, modified desc",
     )
     target_signature = _bom_signature(rows)
+    target_scrap_signature = _bom_scrap_signature(scrap_rows)
     for existing in existing_boms:
         bom = frappe.get_doc("BOM", existing.name)
-        if _bom_signature(bom.items) == target_signature:
+        if _bom_signature(bom.items) == target_signature and _bom_scrap_signature(bom.scrap_items) == target_scrap_signature:
             if bom.docstatus == 0:
                 bom.submit()
             return bom.name, True
@@ -1394,11 +1397,24 @@ def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=
     bom.is_default = is_default
     for row in rows:
         bom.append("items", row)
+    for row in scrap_rows:
+        bom.append("scrap_items", row)
     bom.insert()
     bom.submit()
     if is_default:
         frappe.db.set_value("Item", item_code, "default_bom", bom.name, update_modified=False)
     return bom.name, False
+
+
+def _bom_scrap_signature(rows):
+    signature = []
+    for row in rows:
+        get = row.get if hasattr(row, "get") else lambda key: getattr(row, key, None)
+        signature.append((
+            get("item_code"),
+            flt(get("stock_qty")),
+        ))
+    return sorted(signature)
 
 
 def _bom_signature(rows):
