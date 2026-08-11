@@ -5,6 +5,7 @@ from frappe.utils import now_datetime
 from frappe.utils import getdate
 from frappe.utils import now_datetime
 from frappe.utils import flt
+from frappe.utils import cint
 import frappe.model.naming
 import csv
 import io
@@ -1319,10 +1320,9 @@ def _get_sheet_raw_material_qty(component):
     length = flt(component.get("bounding_box_length"))
     width = flt(component.get("bounding_box_width"))
     thickness = flt(component.get("sheet_metal_thickness"))
-    qty = flt(component.get("qty")) or 1
     if density > 0 and length > 0 and width > 0 and thickness > 0:
-        return (length * width * thickness * density / 1000000) * qty
-    return flt(component.get("gross_weight")) or (flt(component.get("mass")) * qty)
+        return length * width * thickness * density / 1000000
+    return flt(component.get("gross_weight")) or flt(component.get("mass"))
 
 
 def _get_default_bom(item_code, company=None):
@@ -1331,6 +1331,114 @@ def _get_default_bom(item_code, company=None):
         if not company or frappe.db.get_value("BOM", default_bom, "company") == company:
             return default_bom
     return frappe.db.get_value("BOM", {"item": item_code, "company": company, "is_default": 1, "docstatus": 1}, "name")
+
+
+@frappe.whitelist()
+def repair_bom_exploded_items(root_bom=None, dry_run=1, only_generated=1):
+    """Rebuild stored BOM Explosion Items when the visible BOM tree is correct."""
+    dry_run = cint(dry_run)
+    only_generated = cint(only_generated)
+    bom_names = _get_boms_for_exploded_repair(root_bom, only_generated)
+    mismatches = []
+
+    for bom_name in bom_names:
+        bom = frappe.get_doc("BOM", bom_name)
+        expected_signature = _expected_exploded_signature(bom)
+        current_signature = _exploded_signature(bom.exploded_items)
+        if expected_signature == current_signature:
+            continue
+
+        mismatches.append({
+            "bom": bom.name,
+            "item": bom.item,
+            "current": current_signature,
+            "expected": expected_signature,
+        })
+        if not dry_run:
+            _rebuild_bom_totals(bom.name)
+
+    if not dry_run:
+        frappe.db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "root_bom": root_bom,
+        "only_generated": only_generated,
+        "bom_count": len(bom_names),
+        "repair_count": len(mismatches),
+        "repairs": mismatches,
+    }
+
+
+def _get_boms_for_exploded_repair(root_bom=None, only_generated=1):
+    if root_bom:
+        if not frappe.db.exists("BOM", root_bom):
+            frappe.throw(_("BOM {0} was not found.").format(root_bom))
+        return _get_bom_tree_postorder(root_bom)
+
+    boms = frappe.get_all("BOM", filters={"docstatus": 1}, fields=["name", "item"], order_by="modified asc")
+    names = [
+        bom.name
+        for bom in boms
+        if not only_generated or _is_generated_bom_item(bom.item)
+    ]
+    ordered = []
+    seen = set()
+    for name in names:
+        for bom_name in _get_bom_tree_postorder(name):
+            if bom_name not in seen:
+                seen.add(bom_name)
+                ordered.append(bom_name)
+    return ordered
+
+
+def _is_generated_bom_item(item_code):
+    item_code = _clean_text(item_code)
+    return bool(re.fullmatch(r"\d{6}", item_code) or re.fullmatch(r"SUB\d{5}", item_code) or item_code.startswith("P-SY-CE-"))
+
+
+def _get_bom_tree_postorder(root_bom):
+    visited = set()
+    ordered = []
+
+    def walk(bom_name):
+        if bom_name in visited:
+            return
+        visited.add(bom_name)
+        for child_bom in frappe.get_all("BOM Item", filters={"parent": bom_name, "bom_no": ["is", "set"]}, pluck="bom_no"):
+            walk(child_bom)
+        ordered.append(bom_name)
+
+    walk(root_bom)
+    return ordered
+
+
+def _expected_exploded_signature(bom):
+    bom.get_exploded_items()
+    return _exploded_signature(bom.cur_exploded_items.values())
+
+
+def _exploded_signature(rows):
+    signature = []
+    for row in rows:
+        get = row.get if hasattr(row, "get") else lambda key: getattr(row, key, None)
+        signature.append((
+            get("item_code"),
+            flt(get("stock_qty"), 6),
+            get("stock_uom"),
+            cint(get("include_item_in_manufacturing")),
+            cint(get("sourced_by_supplier")),
+        ))
+    return sorted(signature)
+
+
+def _rebuild_bom_totals(bom_name):
+    bom = frappe.get_doc("BOM", bom_name)
+    bom.update_exploded_items(save=True)
+    bom.calculate_rm_cost(save=True)
+    bom.calculate_sm_cost(save=True)
+    bom.calculate_exploded_cost()
+    bom.db_update()
 
 
 def _make_bom_row(item_code, qty, source_uom, child_bom, source_row):
