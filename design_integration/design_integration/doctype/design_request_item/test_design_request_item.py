@@ -144,8 +144,8 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(
 			summary["barcodes"],
 			[
-				{"item_code": "000001", "barcode": "000001", "barcode_type": "CODE-39"},
-				{"item_code": "000002", "barcode": "000002", "barcode_type": "CODE-39"},
+				{"item_code": "000001", "barcode": "000001", "barcode_type": "CODE-39", "item_name": "LEG TUBE ASM"},
+				{"item_code": "000002", "barcode": "000002", "barcode_type": "CODE-39", "item_name": "LEG TUBE"},
 			],
 		)
 
@@ -420,11 +420,13 @@ class TestDesignRequestItem(TestCase):
 			]
 		}
 		captured_rows = {}
+		captured_scrap_rows = {}
 		created_for = []
 
-		def fake_bom(item_code, company, quantity, rows, is_default=0):
+		def fake_bom(item_code, company, quantity, rows, is_default=0, scrap_rows=None):
 			created_for.append(item_code)
 			captured_rows[item_code] = rows
+			captured_scrap_rows[item_code] = scrap_rows or []
 			return f"BOM-{item_code}", False
 
 		source_to_item = {"MAIN": "ITEM-MAIN", "PANEL-1": "SF-PANEL-1", "PANEL-2": "SF-PANEL-2"}
@@ -436,7 +438,8 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertEqual(created_for, ["SF-PANEL-1", "SF-PANEL-2", "ITEM-MAIN", "FG-001"])
 		self.assertEqual(captured_rows["SF-PANEL-1"][0]["item_code"], "RM-SHEET-1MM")
-		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 4.1914224)
+		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 2.0957112)
+		self.assertEqual(captured_scrap_rows["SF-PANEL-1"], [{"item_code": "RM-SHEET-1MM", "stock_qty": 1}])
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
 
