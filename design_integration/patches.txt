@@ -6,3 +6,4 @@
 # Patches added in this section will be executed after doctypes are migrated
 design_integration.design_integration.patches.v1_0.repair_generated_bom_exploded_items
 design_integration.design_integration.patches.v1_0.repair_generated_bom_exploded_items_multilevel
+design_integration.design_integration.patches.v1_0.repair_generated_bom_exploded_items_recursive
