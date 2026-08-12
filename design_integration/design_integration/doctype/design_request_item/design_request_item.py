@@ -1334,28 +1334,38 @@ def _get_default_bom(item_code, company=None):
 
 
 @frappe.whitelist()
-def repair_bom_exploded_items(root_bom=None, dry_run=1, only_generated=1):
+def repair_bom_exploded_items(root_bom=None, dry_run=1, only_generated=1, repeat_until_clean=0):
     """Rebuild stored BOM Explosion Items when the visible BOM tree is correct."""
     dry_run = cint(dry_run)
     only_generated = cint(only_generated)
+    repeat_until_clean = cint(repeat_until_clean)
     bom_names = _get_boms_for_exploded_repair(root_bom, only_generated)
-    mismatches = []
+    repairs = []
+    max_passes = 3 if repeat_until_clean and not dry_run else 1
 
-    for bom_name in bom_names:
-        bom = frappe.get_doc("BOM", bom_name)
-        expected_signature = _expected_exploded_signature(bom)
-        current_signature = _exploded_signature(bom.exploded_items)
-        if expected_signature == current_signature:
-            continue
+    for pass_number in range(1, max_passes + 1):
+        pass_repairs = []
+        for bom_name in bom_names:
+            bom = frappe.get_doc("BOM", bom_name)
+            expected_signature = _expected_exploded_signature(bom)
+            current_signature = _exploded_signature(bom.exploded_items)
+            if expected_signature == current_signature:
+                continue
 
-        mismatches.append({
-            "bom": bom.name,
-            "item": bom.item,
-            "current": current_signature,
-            "expected": expected_signature,
-        })
-        if not dry_run:
-            _rebuild_bom_totals(bom.name)
+            repair = {
+                "bom": bom.name,
+                "item": bom.item,
+                "pass": pass_number,
+                "current_rows": len(current_signature),
+                "expected_rows": len(expected_signature),
+            }
+            pass_repairs.append(repair)
+            repairs.append(repair)
+            if not dry_run:
+                _rebuild_bom_totals(bom.name)
+
+        if not pass_repairs:
+            break
 
     if not dry_run:
         frappe.db.commit()
@@ -1364,9 +1374,10 @@ def repair_bom_exploded_items(root_bom=None, dry_run=1, only_generated=1):
         "dry_run": dry_run,
         "root_bom": root_bom,
         "only_generated": only_generated,
+        "repeat_until_clean": repeat_until_clean,
         "bom_count": len(bom_names),
-        "repair_count": len(mismatches),
-        "repairs": mismatches,
+        "repair_count": len(repairs),
+        "repairs": repairs,
     }
 
 
