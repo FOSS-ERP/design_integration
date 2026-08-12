@@ -1425,8 +1425,53 @@ def _get_bom_tree_postorder(root_bom):
 
 
 def _expected_exploded_signature(bom):
-    bom.get_exploded_items()
-    return _exploded_signature(bom.cur_exploded_items.values())
+    return _exploded_signature(_get_expected_exploded_rows_from_bom(bom.name))
+
+
+def _get_expected_exploded_rows_from_bom(bom_name, multiplier=1, visiting=None):
+    visiting = visiting or set()
+    if bom_name in visiting:
+        frappe.throw(_("Circular BOM dependency detected while repairing exploded items: {0}").format(bom_name))
+
+    visiting.add(bom_name)
+    bom = frappe.get_doc("BOM", bom_name)
+    rows = {}
+
+    for item in bom.items:
+        if item.bom_no:
+            child_bom_qty = flt(frappe.db.get_value("BOM", item.bom_no, "quantity")) or 1
+            child_multiplier = multiplier * flt(item.stock_qty) / child_bom_qty
+            for child_row in _get_expected_exploded_rows_from_bom(item.bom_no, child_multiplier, visiting):
+                _add_expected_exploded_row(rows, child_row)
+        elif item.item_code:
+            _add_expected_exploded_row(rows, {
+                "item_code": item.item_code,
+                "stock_qty": multiplier * flt(item.stock_qty),
+                "stock_uom": item.stock_uom,
+                "include_item_in_manufacturing": item.include_item_in_manufacturing,
+                "sourced_by_supplier": item.sourced_by_supplier,
+            })
+
+    visiting.remove(bom_name)
+    return rows.values()
+
+
+def _add_expected_exploded_row(rows, row):
+    item_code = row.get("item_code")
+    if not item_code:
+        return
+
+    if item_code in rows:
+        rows[item_code]["stock_qty"] += flt(row.get("stock_qty"))
+        return
+
+    rows[item_code] = frappe._dict({
+        "item_code": item_code,
+        "stock_qty": flt(row.get("stock_qty")),
+        "stock_uom": row.get("stock_uom"),
+        "include_item_in_manufacturing": cint(row.get("include_item_in_manufacturing")),
+        "sourced_by_supplier": cint(row.get("sourced_by_supplier")),
+    })
 
 
 def _exploded_signature(rows):
