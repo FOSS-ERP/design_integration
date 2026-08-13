@@ -443,6 +443,25 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
 
+	def test_update_bom_raw_material_row_sets_per_unit_quantities(self):
+		row = SimpleNamespace(name="bom-item-row", conversion_factor=2, rate=10, base_rate=12)
+
+		with patch.object(dri.frappe.db, "set_value") as set_value:
+			dri._update_bom_raw_material_row(row, 4.5)
+
+		set_value.assert_called_once_with(
+			"BOM Item",
+			"bom-item-row",
+			{
+				"qty": 2.25,
+				"stock_qty": 4.5,
+				"qty_consumed_per_unit": 4.5,
+				"amount": 45.0,
+				"base_amount": 54.0,
+			},
+			update_modified=False,
+		)
+
 	def test_clean_text_extracts_markdown_link_label(self):
 		self.assertEqual(
 			dri._clean_text("[**P-SY-SA-0001-SQ-2-40-40-810**](http://site2.local/item)"),
