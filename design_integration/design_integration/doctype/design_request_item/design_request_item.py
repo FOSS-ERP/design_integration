@@ -1325,6 +1325,194 @@ def _get_sheet_raw_material_qty(component):
     return flt(component.get("gross_weight")) or flt(component.get("mass"))
 
 
+@frappe.whitelist()
+def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, dry_run=1):
+    """Repair generated sheet-part BOM raw-material qty from the original imported sheet."""
+    dry_run = cint(dry_run)
+    design_items = _get_design_items_for_sheet_bom_repair(design_request_item)
+    repairs = []
+    rebuilt_boms = set()
+
+    for design_item in design_items:
+        try:
+            fg_item_code = _get_finished_good_item_code(design_item)
+            workbook_path = _resolve_bom_workbook(design_item)
+            parsed = _parse_bom_workbook(workbook_path, fg_item_code)
+            _apply_mappings_to_sheet_components(parsed)
+            source_to_item = _resolve_existing_items_for_repair(parsed)
+            assembly_boms = _get_existing_bom_hierarchy_for_repair(design_item, parsed, source_to_item)
+            component_boms = _repair_sheet_component_boms_from_parsed_sheet(
+                design_item,
+                parsed,
+                source_to_item,
+                dry_run,
+                repairs,
+            )
+            if not dry_run and component_boms:
+                for bom_name in _get_repair_rebuild_order(assembly_boms.values(), component_boms):
+                    _rebuild_bom_totals(bom_name)
+                    rebuilt_boms.add(bom_name)
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Design Sheet BOM Quantity Repair Failed")
+            repairs.append({
+                "design_request_item": design_item.name,
+                "error": frappe.get_traceback(),
+            })
+
+    if not dry_run:
+        frappe.db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "design_item_count": len(design_items),
+        "repair_count": len([row for row in repairs if not row.get("error")]),
+        "rebuilt_bom_count": len(rebuilt_boms),
+        "repairs": repairs,
+    }
+
+
+def _get_design_items_for_sheet_bom_repair(design_request_item=None):
+    if design_request_item:
+        return [frappe.get_doc("Design Request Item", design_request_item)]
+
+    filters = {"bom_created": 1, "bom_name": ["is", "set"]}
+    meta = frappe.get_meta("Design Request Item")
+    if meta.has_field("custom_bom_import_status"):
+        filters["custom_bom_import_status"] = "Completed"
+
+    return frappe.get_all("Design Request Item", filters=filters, fields="*", order_by="modified asc")
+
+
+def _apply_mappings_to_sheet_components(parsed):
+    for component in _iter_parsed_components(parsed):
+        if not _is_sheet_row(component):
+            continue
+        mapping = _find_mapped_item(component)
+        component["raw_material_item_code"] = mapping.get("erp_item")
+        component["raw_material_density"] = flt(mapping.get("material_density"))
+
+
+def _iter_parsed_components(parsed):
+    for assembly in parsed.get("assemblies", []):
+        for component in assembly.get("components", []):
+            yield component
+    for component in parsed.get("main_components", []):
+        yield component
+
+
+def _resolve_existing_items_for_repair(parsed):
+    source_to_item = {}
+    for assembly in parsed.get("assemblies", []):
+        source_to_item[_get_source_key(assembly)] = _find_existing_item(assembly)
+        for component in assembly.get("components", []):
+            source_to_item[_get_source_key(component)] = _find_existing_item(component)
+    for component in parsed.get("main_components", []):
+        source_to_item[_get_source_key(component)] = _find_existing_item(component)
+    return {key: item for key, item in source_to_item.items() if item}
+
+
+def _get_existing_bom_hierarchy_for_repair(design_item, parsed, source_to_item):
+    graph = _build_dependency_graph(parsed)
+    assembly_boms = {}
+
+    def build_for(source):
+        if source in assembly_boms:
+            return assembly_boms[source]
+        for child in graph.get(source, []):
+            build_for(child)
+        item_code = source_to_item.get(source)
+        if item_code:
+            assembly_boms[source] = _get_default_bom(item_code, design_item.company)
+        return assembly_boms.get(source)
+
+    child_sources = {child for children in graph.values() for child in children}
+    top_level_sources = [_get_source_key(assembly) for assembly in parsed["assemblies"] if _get_source_key(assembly) not in child_sources]
+    for source in top_level_sources:
+        build_for(source)
+
+    fg_bom = getattr(design_item, "bom_name", None) or _get_default_bom(_get_finished_good_item_code(design_item), design_item.company)
+    if fg_bom:
+        assembly_boms["__fg__"] = fg_bom
+
+    return {source: bom for source, bom in assembly_boms.items() if bom}
+
+
+def _repair_sheet_component_boms_from_parsed_sheet(design_item, parsed, source_to_item, dry_run, repairs):
+    component_boms = set()
+
+    for component in _iter_parsed_components(parsed):
+        raw_material_item = component.get("raw_material_item_code")
+        if not raw_material_item:
+            continue
+        component_item = source_to_item.get(_get_source_key(component))
+        if not component_item:
+            continue
+        bom_name = _get_default_bom(component_item, design_item.company)
+        if not bom_name:
+            continue
+        bom = frappe.get_doc("BOM", bom_name)
+        if not _is_single_raw_material_bom(bom):
+            continue
+
+        raw_row = bom.items[0]
+        expected_qty = _get_sheet_raw_material_qty(component)
+        current_qty = flt(raw_row.stock_qty)
+        if raw_row.item_code != raw_material_item or expected_qty <= 0 or abs(current_qty - expected_qty) <= 0.000001:
+            continue
+
+        repairs.append({
+            "design_request_item": design_item.name,
+            "bom": bom.name,
+            "item": bom.item,
+            "raw_material_item": raw_material_item,
+            "source_row": component.get("source_row"),
+            "current_qty": current_qty,
+            "expected_qty": expected_qty,
+        })
+        component_boms.add(bom.name)
+
+        if not dry_run:
+            _update_bom_raw_material_row(raw_row, expected_qty)
+
+    return component_boms
+
+
+def _is_single_raw_material_bom(bom):
+    return bom.docstatus == 1 and len(bom.items) == 1 and not bom.items[0].bom_no
+
+
+def _update_bom_raw_material_row(row, stock_qty):
+    stock_qty = flt(stock_qty)
+    conversion_factor = flt(row.conversion_factor) or 1
+    rate = flt(row.rate)
+    base_rate = flt(row.base_rate) or rate
+    frappe.db.set_value(
+        "BOM Item",
+        row.name,
+        {
+            "qty": stock_qty / conversion_factor,
+            "stock_qty": stock_qty,
+            "qty_consumed_per_unit": stock_qty,
+            "amount": stock_qty * rate,
+            "base_amount": stock_qty * base_rate,
+        },
+        update_modified=False,
+    )
+
+
+def _get_repair_rebuild_order(assembly_boms, component_boms):
+    ordered = []
+    seen = set()
+    for bom_name in list(component_boms) + list(assembly_boms):
+        if not bom_name:
+            continue
+        for tree_bom in _get_bom_tree_postorder(bom_name):
+            if tree_bom not in seen:
+                seen.add(tree_bom)
+                ordered.append(tree_bom)
+    return ordered
+
+
 def _get_default_bom(item_code, company=None):
     default_bom = frappe.db.get_value("Item", item_code, "default_bom")
     if default_bom and frappe.db.get_value("BOM", default_bom, "docstatus") == 1:
