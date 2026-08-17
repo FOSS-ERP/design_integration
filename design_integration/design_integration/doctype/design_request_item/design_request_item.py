@@ -1326,9 +1326,11 @@ def _get_sheet_raw_material_qty(component):
 
 
 @frappe.whitelist()
-def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, root_bom=None, bom_file=None, dry_run=1):
+def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, root_bom=None, bom_file=None, dry_run=1, use_history=0):
     """Repair generated sheet-part BOM raw-material qty from the original imported sheet."""
     dry_run = cint(dry_run)
+    if cint(use_history):
+        return _repair_generated_sheet_bom_raw_material_quantities_from_history(design_request_item, dry_run)
     if root_bom:
         return _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, bom_file, dry_run)
 
@@ -1374,7 +1376,112 @@ def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None,
     }
 
 
-def _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, bom_file, dry_run):
+def _repair_generated_sheet_bom_raw_material_quantities_from_history(design_request_item, dry_run):
+    if not design_request_item:
+        frappe.throw(_("Design Request Item is required when repairing from history."))
+
+    targets = _get_sheet_bom_repair_targets_from_history(design_request_item)
+    repairs = []
+    errors = []
+    rebuilt_bom_count = 0
+
+    for target in targets:
+        try:
+            result = _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(
+                target.get("root_bom"),
+                target.get("bom_file"),
+                dry_run,
+                commit=False,
+            )
+            repairs.extend(result.get("repairs") or [])
+            rebuilt_bom_count += cint(result.get("rebuilt_bom_count"))
+        except Exception:
+            frappe.log_error(frappe.get_traceback(), "Design Sheet BOM History Repair Failed")
+            errors.append({
+                "root_bom": target.get("root_bom"),
+                "bom_file": target.get("bom_file"),
+                "error": frappe.get_traceback(),
+            })
+
+    if not dry_run:
+        frappe.db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "design_request_item": design_request_item,
+        "target_count": len(targets),
+        "repair_count": len([row for row in repairs if not row.get("error")]),
+        "rebuilt_bom_count": rebuilt_bom_count,
+        "targets": targets,
+        "repairs": repairs,
+        "errors": errors,
+    }
+
+
+def _get_sheet_bom_repair_targets_from_history(design_request_item):
+    versions = frappe.get_all(
+        "Version",
+        filters={"ref_doctype": "Design Request Item", "docname": design_request_item},
+        fields=["name", "creation", "data"],
+        order_by="creation asc",
+        limit=1000,
+    )
+    targets = []
+    seen = set()
+    current_file = None
+    last_file = None
+    current_item = None
+
+    for version in versions:
+        data = frappe.parse_json(version.data or "{}")
+        changed = data.get("changed") or []
+        bom_cleared = None
+        file_cleared = None
+        item_hint = None
+
+        for row in changed:
+            if not row or len(row) < 3:
+                continue
+            fieldname, old_value, new_value = row[0], row[1], row[2]
+            if fieldname == "new_item_code":
+                if new_value:
+                    current_item = new_value
+                elif old_value:
+                    item_hint = old_value
+            elif fieldname in ("custom_bom_for_import", "custom_bom_importer"):
+                if new_value:
+                    current_file = new_value
+                    last_file = new_value
+                elif old_value:
+                    file_cleared = old_value
+                    last_file = old_value
+                    current_file = None
+            elif fieldname == "bom_name" and old_value and not new_value:
+                bom_cleared = old_value
+
+        if not bom_cleared:
+            continue
+
+        bom_file = file_cleared or current_file or last_file
+        if not bom_file:
+            continue
+
+        key = (bom_cleared, bom_file)
+        if key in seen:
+            continue
+        seen.add(key)
+        targets.append({
+            "root_bom": bom_cleared,
+            "bom_file": bom_file,
+            "version": version.name,
+            "version_creation": version.creation,
+            "item_code": item_hint or current_item,
+        })
+
+    return targets
+
+
+def _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, bom_file, dry_run, commit=True):
     if not bom_file:
         frappe.throw(_("BOM file is required when repairing by root BOM."))
     if not frappe.db.exists("BOM", root_bom):
@@ -1405,7 +1512,8 @@ def _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, b
         for bom_name in _get_repair_rebuild_order([root_bom], component_boms):
             _rebuild_bom_totals(bom_name)
             rebuilt_boms.add(bom_name)
-        frappe.db.commit()
+        if commit:
+            frappe.db.commit()
 
     return {
         "dry_run": dry_run,
