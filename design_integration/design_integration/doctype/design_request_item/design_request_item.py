@@ -1326,9 +1326,12 @@ def _get_sheet_raw_material_qty(component):
 
 
 @frappe.whitelist()
-def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, dry_run=1):
+def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, root_bom=None, bom_file=None, dry_run=1):
     """Repair generated sheet-part BOM raw-material qty from the original imported sheet."""
     dry_run = cint(dry_run)
+    if root_bom:
+        return _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, bom_file, dry_run)
+
     design_items = _get_design_items_for_sheet_bom_repair(design_request_item)
     repairs = []
     rebuilt_boms = set()
@@ -1365,6 +1368,50 @@ def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None,
     return {
         "dry_run": dry_run,
         "design_item_count": len(design_items),
+        "repair_count": len([row for row in repairs if not row.get("error")]),
+        "rebuilt_bom_count": len(rebuilt_boms),
+        "repairs": repairs,
+    }
+
+
+def _repair_generated_sheet_bom_raw_material_quantities_for_root_bom(root_bom, bom_file, dry_run):
+    if not bom_file:
+        frappe.throw(_("BOM file is required when repairing by root BOM."))
+    if not frappe.db.exists("BOM", root_bom):
+        frappe.throw(_("BOM {0} was not found.").format(root_bom))
+
+    root_bom_doc = frappe.get_doc("BOM", root_bom)
+    design_item = frappe._dict({
+        "name": root_bom,
+        "item_code": root_bom_doc.item,
+        "new_item_code": root_bom_doc.item,
+        "company": root_bom_doc.company,
+        "bom_name": root_bom,
+        "custom_bom_importer": bom_file,
+    })
+    workbook_path = _resolve_bom_workbook(design_item)
+    parsed = _parse_bom_workbook(workbook_path, root_bom_doc.item)
+    _apply_mappings_to_sheet_components(parsed)
+
+    repairs = []
+    component_boms = _repair_sheet_component_boms_by_bom_tree_paths(
+        root_bom,
+        parsed,
+        dry_run,
+        repairs,
+    )
+    rebuilt_boms = set()
+    if not dry_run and component_boms:
+        for bom_name in _get_repair_rebuild_order([root_bom], component_boms):
+            _rebuild_bom_totals(bom_name)
+            rebuilt_boms.add(bom_name)
+        frappe.db.commit()
+
+    return {
+        "dry_run": dry_run,
+        "root_bom": root_bom,
+        "bom_file": bom_file,
+        "design_item_count": 0,
         "repair_count": len([row for row in repairs if not row.get("error")]),
         "rebuilt_bom_count": len(rebuilt_boms),
         "repairs": repairs,
@@ -1475,6 +1522,97 @@ def _repair_sheet_component_boms_from_parsed_sheet(design_item, parsed, source_t
             _update_bom_raw_material_row(raw_row, expected_qty)
 
     return component_boms
+
+
+def _repair_sheet_component_boms_by_bom_tree_paths(root_bom, parsed, dry_run, repairs):
+    parsed_components = _get_sheet_components_by_repair_path(parsed)
+    bom_components = _get_single_raw_material_boms_by_repair_path(root_bom)
+    component_boms = set()
+
+    for path, components in parsed_components.items():
+        bom_names = bom_components.get(path) or []
+        for index, component in enumerate(components):
+            if index >= len(bom_names):
+                continue
+            bom = frappe.get_doc("BOM", bom_names[index])
+            raw_row = bom.items[0]
+            raw_material_item = component.get("raw_material_item_code")
+            expected_qty = _get_sheet_raw_material_qty(component)
+            current_qty = flt(raw_row.stock_qty)
+            if raw_row.item_code != raw_material_item or expected_qty <= 0 or abs(current_qty - expected_qty) <= 0.000001:
+                continue
+
+            repairs.append({
+                "root_bom": root_bom,
+                "path": path,
+                "bom": bom.name,
+                "item": bom.item,
+                "raw_material_item": raw_material_item,
+                "source_row": component.get("source_row"),
+                "current_qty": current_qty,
+                "expected_qty": expected_qty,
+            })
+            component_boms.add(bom.name)
+
+            if not dry_run:
+                _update_bom_raw_material_row(raw_row, expected_qty)
+
+    return component_boms
+
+
+def _get_sheet_components_by_repair_path(parsed):
+    graph = _build_dependency_graph(parsed)
+    assembly_map = {_get_source_key(assembly): assembly for assembly in parsed.get("assemblies", [])}
+    child_sources = {child for children in graph.values() for child in children}
+    top_level_sources = [_get_source_key(assembly) for assembly in parsed.get("assemblies", []) if _get_source_key(assembly) not in child_sources]
+    components_by_path = {}
+
+    def walk_assembly(source, parent_path):
+        assembly = assembly_map[source]
+        assembly_path = parent_path + [_get_repair_path_label(assembly)]
+        for component in assembly.get("components", []):
+            component_path = assembly_path + [_get_repair_path_label(component)]
+            child_source = component.get("assembly_source_key")
+            if child_source and child_source in assembly_map:
+                walk_assembly(child_source, assembly_path)
+            elif component.get("raw_material_item_code"):
+                _append_repair_path_row(components_by_path, component_path, component)
+
+    for source in top_level_sources:
+        walk_assembly(source, [])
+    for component in parsed.get("main_components", []):
+        if component.get("raw_material_item_code"):
+            _append_repair_path_row(components_by_path, [_get_repair_path_label(component)], component)
+    return components_by_path
+
+
+def _get_single_raw_material_boms_by_repair_path(root_bom):
+    boms_by_path = {}
+
+    def walk_bom(bom_name, parent_path):
+        bom = frappe.get_doc("BOM", bom_name)
+        for row in bom.items:
+            row_path = parent_path + [_get_repair_path_label(row)]
+            if row.bom_no:
+                child_bom = frappe.get_doc("BOM", row.bom_no)
+                if _is_single_raw_material_bom(child_bom):
+                    _append_repair_path_row(boms_by_path, row_path, child_bom.name)
+                else:
+                    walk_bom(child_bom.name, row_path)
+
+    walk_bom(root_bom, [])
+    return boms_by_path
+
+
+def _append_repair_path_row(rows_by_path, path_parts, row):
+    key = " > ".join(path_parts)
+    rows_by_path.setdefault(key, []).append(row)
+
+
+def _get_repair_path_label(row):
+    get = row.get if hasattr(row, "get") else lambda key: getattr(row, key, None)
+    value = get("item_name") or get("description") or get("part_name") or get("source_part_no") or get("item_code")
+    return re.sub(r"\s+", " ", _clean_text(value)).strip().upper()
 
 
 def _is_single_raw_material_bom(bom):
