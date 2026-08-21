@@ -376,13 +376,17 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
             item_doc = frappe.new_doc("Design Request Item")
             item_doc.item_code = child.item_code
             item_doc.item_name = child.item_name
-            item_doc.description = child.description
+            item_doc.description = child.description or child.item_name
             item_doc.qty = child.qty
             item_doc.uom = child.uom
             item_doc.design_status = child.design_status
             item_doc.approval_status = child.approval_status
             item_doc.design_request = design_request.name
             item_doc.company = design_request.company or frappe.defaults.get_global_default("company")
+            if frappe.get_meta("Design Request Item").has_field("custom_project"):
+                item_doc.custom_project = design_request.project
+            if frappe.get_meta("Design Request Item").has_field("custom_sales_order"):
+                item_doc.custom_sales_order = design_request.sales_order
             item_doc.insert(ignore_permissions=True)
             # link back
 

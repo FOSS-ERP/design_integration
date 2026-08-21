@@ -935,6 +935,7 @@ def _find_cycle(graph):
 def _resolve_or_create_items(design_item, parsed):
     source_to_item = {}
     summary = {"created": [], "reused": [], "barcodes": []}
+    created_item_codes = set()
     rows = []
     for assembly in parsed["assemblies"]:
         rows.append((assembly, True))
@@ -945,7 +946,7 @@ def _resolve_or_create_items(design_item, parsed):
         key = _get_source_key(row)
         if key in source_to_item:
             continue
-        item_code = _find_existing_item(row)
+        item_code = _find_existing_item(row, created_item_codes)
         if item_code:
             source_to_item[key] = item_code
             summary["reused"].append(item_code)
@@ -966,6 +967,7 @@ def _resolve_or_create_items(design_item, parsed):
         )
         source_to_item[key] = item_code
         summary["created"].append(item_code)
+        created_item_codes.add(item_code)
         summary["barcodes"].append(
             {
                 "item_code": item_code,
@@ -1049,7 +1051,8 @@ def _normalize_thickness(value):
     return _normalize_mapping_value(value)
 
 
-def _find_existing_item(row):
+def _find_existing_item(row, exclude_item_codes=None):
+    exclude_item_codes = set(exclude_item_codes or [])
     erp_item_code = row.get("erp_item_code")
     if erp_item_code and frappe.db.exists("Item", erp_item_code):
         return erp_item_code
@@ -1060,7 +1063,31 @@ def _find_existing_item(row):
 
     engineering_field = _get_engineering_reference_field()
     if engineering_field and source_part_no:
-        return frappe.db.get_value("Item", {engineering_field: source_part_no}, "name")
+        item_code = frappe.db.get_value("Item", {engineering_field: source_part_no}, "name")
+        if item_code:
+            return item_code
+
+    return _find_existing_generated_item_by_name(row, exclude_item_codes)
+
+
+def _find_existing_generated_item_by_name(row, exclude_item_codes=None):
+    """Reuse a pre-existing generated Item with the same name, but not one created in this import."""
+    exclude_item_codes = set(exclude_item_codes or [])
+    item_name = _clean_text(row.get("part_name") or row.get("source_part_no"))
+    if not item_name:
+        return None
+
+    matches = frappe.get_all(
+        "Item",
+        filters={"item_name": item_name, "disabled": 0},
+        fields=["name", "item_code"],
+        order_by="creation asc",
+        limit_page_length=20,
+    )
+    for match in matches:
+        item_code = match.get("item_code") or match.get("name")
+        if item_code not in exclude_item_codes:
+            return match.get("name")
     return None
 
 
