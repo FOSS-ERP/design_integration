@@ -1306,11 +1306,13 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
     def make_component_row(component):
         component_key = _get_source_key(component)
         component_item = source_to_item[component_key]
-        child_bom = assembly_boms.get(component.get("assembly_source_key")) or component_boms.get(component_key) or _get_default_bom(component_item, design_item.company)
+        child_bom = assembly_boms.get(component.get("assembly_source_key")) or component_boms.get(component_key)
         if component.get("raw_material_item_code") and not child_bom:
             child_bom, reused = _create_sheet_component_bom(design_item, component_item, component)
             component_boms[component_key] = child_bom
             summary["reused" if reused else "created"].append(child_bom)
+        elif not child_bom:
+            child_bom = _get_default_bom(component_item, design_item.company)
         return _make_bom_row(component_item, flt(component["qty"]), None if child_bom else component.get("uom"), child_bom, component.get("source_row"))
 
     def build_for(source):
