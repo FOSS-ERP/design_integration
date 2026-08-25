@@ -2,7 +2,7 @@ import os
 import tempfile
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from openpyxl import Workbook
 
@@ -133,7 +133,7 @@ class TestDesignRequestItem(TestCase):
 		with patch.object(dri, "_find_mapped_item", return_value=None), \
 			patch.object(dri, "_find_existing_item", return_value=None), \
 			patch.object(dri.frappe, "has_permission", return_value=True), \
-			patch.object(dri, "_get_next_generated_item_code", side_effect=["000001", "000002"]), \
+			patch.object(dri, "_get_generated_item_code_for_row", side_effect=["000001", "000002"]), \
 			patch.object(dri, "_create_missing_item", side_effect=["000001", "000002"]), \
 			patch.object(dri, "_assign_generated_item_barcode", side_effect=["000001", "000002"]):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
@@ -160,7 +160,7 @@ class TestDesignRequestItem(TestCase):
 
 		with patch.object(dri, "_find_existing_item", return_value=None), \
 			patch.object(dri.frappe, "has_permission", return_value=True), \
-			patch.object(dri, "_get_next_generated_item_code", side_effect=["000010", "000011"]), \
+			patch.object(dri, "_get_generated_item_code_for_row", side_effect=["000010", "000011"]), \
 			patch.object(dri, "_create_missing_item", side_effect=["000010", "000011"]), \
 			patch.object(dri, "_assign_generated_item_barcode", side_effect=["000010", "000011"]):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
@@ -168,6 +168,47 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(source_to_item["row:5"], "000010")
 		self.assertEqual(source_to_item["row:9"], "000011")
 		self.assertEqual(summary["created"], ["000010", "000011"])
+
+	def test_sheet_rows_use_prt_item_code_and_barcode(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
+		parsed = {
+			"assemblies": [
+				{
+					"source_key": "row:1",
+					"source_part_no": "SA-001",
+					"part_name": "SHELF ASM",
+					"uom": "Nos",
+					"components": [
+						{
+							"source_key": "row:2",
+							"source_part_no": "SHELF",
+							"part_name": "SHELF",
+							"row_type": "Sheet",
+							"uom": "Nos",
+						}
+					],
+				}
+			]
+		}
+
+		with patch.object(dri, "_find_existing_item", return_value=None), \
+			patch.object(dri, "_find_mapped_item", return_value={"erp_item": "RM-001", "material_density": 8}), \
+			patch.object(dri.frappe, "has_permission", return_value=True), \
+			patch.object(dri, "_get_next_generated_sub_assembly_code", return_value="SUB00001"), \
+			patch.object(dri, "_get_next_generated_part_code", return_value="PRT002663"), \
+			patch.object(dri, "_create_missing_item", side_effect=["SUB00001", "PRT002663"]), \
+			patch.object(dri, "_assign_generated_item_barcode", side_effect=["SUB00001", "PRT002663"]):
+			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
+
+		self.assertEqual(source_to_item["row:1"], "SUB00001")
+		self.assertEqual(source_to_item["row:2"], "PRT002663")
+		self.assertEqual(
+			summary["barcodes"],
+			[
+				{"item_code": "SUB00001", "barcode": "SUB00001", "barcode_type": "CODE-39", "item_name": "SHELF ASM"},
+				{"item_code": "PRT002663", "barcode": "PRT002663", "barcode_type": "CODE-39", "item_name": "SHELF"},
+			],
+		)
 
 	def test_existing_child_items_reused(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
@@ -255,6 +296,10 @@ class TestDesignRequestItem(TestCase):
 
 	def test_mapping_normalizes_material_hash_spacing(self):
 		self.assertEqual(dri._normalize_mapping_value("AISI430#4"), dri._normalize_mapping_value("AISI430 #4"))
+
+	def test_next_generated_part_barcode_uses_prt_six_digit_sequence(self):
+		with patch.object(dri.frappe, "db", SimpleNamespace(sql=lambda _query: [["PRT002662"]])):
+			self.assertEqual(dri._get_next_generated_part_barcode(), "PRT002663")
 
 	def test_generated_sku_barcode_csv_contains_only_generated_rows(self):
 		csv_content = dri._format_generated_sku_barcode_csv(
@@ -446,7 +491,8 @@ class TestDesignRequestItem(TestCase):
 	def test_update_bom_raw_material_row_sets_per_unit_quantities(self):
 		row = SimpleNamespace(name="bom-item-row", conversion_factor=2, rate=10, base_rate=12)
 
-		with patch.object(dri.frappe.db, "set_value") as set_value:
+		set_value = Mock()
+		with patch.object(dri.frappe, "db", SimpleNamespace(set_value=set_value)):
 			dri._update_bom_raw_material_row(row, 4.5)
 
 		set_value.assert_called_once_with(

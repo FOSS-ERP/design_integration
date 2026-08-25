@@ -959,7 +959,7 @@ def _resolve_or_create_items(design_item, parsed):
                 row["raw_material_density"] = flt(mapping.get("material_density"))
         if not frappe.has_permission("Item", "create"):
             frappe.throw(_("You need Create permission on Item to create missing child Items."))
-        generated_item_code = _get_next_generated_sub_assembly_code() if is_assembly else _get_next_generated_item_code()
+        generated_item_code = _get_generated_item_code_for_row(row, is_assembly)
         item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
         barcode = _assign_generated_item_barcode(
             item_code,
@@ -1092,6 +1092,14 @@ def _find_existing_generated_item_by_name(row, exclude_item_codes=None):
     return None
 
 
+def _get_generated_item_code_for_row(row, is_assembly):
+    if is_assembly:
+        return _get_next_generated_sub_assembly_code()
+    if _is_sheet_row(row):
+        return _get_next_generated_part_code()
+    return _get_next_generated_item_code()
+
+
 def _get_engineering_reference_field():
     meta = frappe.get_meta("Item")
     for fieldname in ("custom_part_no", "custom_part_number", "custom_drawing_no", "drawing_no", "drawing_number", "part_number"):
@@ -1172,7 +1180,7 @@ def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembl
 
     if is_assembly:
         frappe.throw(_("Could not generate a unique SUB barcode for Item {0}.").format(item_code))
-    frappe.throw(_("Could not generate a unique 6 digit barcode for Item {0}.").format(item_code))
+    frappe.throw(_("Could not generate a unique barcode for Item {0}.").format(item_code))
 
 
 def _get_next_generated_item_code():
@@ -1191,6 +1199,15 @@ def _get_next_generated_sub_assembly_code():
             continue
         return item_code
     frappe.throw(_("Could not generate a unique SUB Item Code."))
+
+
+def _get_next_generated_part_code():
+    for _attempt in range(100):
+        item_code = _get_next_generated_part_barcode()
+        if frappe.db.exists("Item", item_code) or frappe.db.exists("Item Barcode", {"barcode": item_code}):
+            continue
+        return item_code
+    frappe.throw(_("Could not generate a unique PRT Item Code."))
 
 
 def _get_next_generated_barcode():
@@ -1237,6 +1254,29 @@ def _get_next_generated_sub_assembly_barcode():
     if next_number > 99999:
         frappe.throw(_("No SUB barcode numbers are available."))
     return f"SUB{next_number:05d}"
+
+
+def _get_next_generated_part_barcode():
+    result = frappe.db.sql(
+        """
+        select code
+        from (
+            select barcode as code
+            from `tabItem Barcode`
+            where barcode regexp '^PRT[0-9]{6}$'
+            union
+            select item_code as code
+            from `tabItem`
+            where item_code regexp '^PRT[0-9]{6}$'
+        ) generated_codes
+        order by code desc
+        limit 1
+        """
+    )
+    next_number = (int(result[0][0][3:]) + 1) if result else 1
+    if next_number > 999999:
+        frappe.throw(_("No PRT barcode numbers are available."))
+    return f"PRT{next_number:06d}"
 
 
 def _get_generated_item_uom(design_item, row, is_assembly):
