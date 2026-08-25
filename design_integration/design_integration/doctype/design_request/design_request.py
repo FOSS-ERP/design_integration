@@ -388,7 +388,14 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
             if frappe.get_meta("Design Request Item").has_field("custom_sales_order"):
                 item_doc.custom_sales_order = design_request.sales_order
             item_doc.insert(ignore_permissions=True)
-            # link back
+            if frappe.get_meta("Design Request Item Child").has_field("design_request_item"):
+                frappe.db.set_value(
+                    "Design Request Item Child",
+                    child.name,
+                    "design_request_item",
+                    item_doc.name,
+                    update_modified=False,
+                )
 
         
         # Verify items were saved

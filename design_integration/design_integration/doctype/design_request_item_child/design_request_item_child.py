@@ -21,7 +21,8 @@ class DesignRequestItemChild(Document):
             try:
                 item = frappe.get_doc("Item", self.item_code)
                 self.item_name = item.item_name
-                self.description = item.description or ""
+                if not self.description:
+                    self.description = item.description or ""
             except:
                 frappe.throw(_("Item {0} not found").format(self.item_code))
     
