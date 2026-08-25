@@ -488,6 +488,48 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
 
+	def test_sheet_rows_do_not_blindly_reuse_existing_default_bom(self):
+		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
+		parsed = {
+			"assemblies": [
+				{
+					"source_part_no": "MAIN",
+					"qty_in_fg": 1,
+					"uom": "Nos",
+					"components": [
+						{
+							"source_part_no": "PANEL-1",
+							"part_name": "Front Panel",
+							"row_type": "Sheet",
+							"sheet_metal_thickness": "1",
+							"bounding_box_length": 1410,
+							"bounding_box_width": 185.79,
+							"qty": 2,
+							"uom": "Kg",
+							"raw_material_item_code": "RM-SHEET-1MM",
+							"raw_material_density": 8,
+							"source_row": 2,
+						},
+					],
+				}
+			]
+		}
+		created_for = []
+
+		def fake_bom(item_code, company, quantity, rows, is_default=0, scrap_rows=None):
+			created_for.append((item_code, rows[0]["qty"]))
+			return f"BOM-{item_code}-NEW", False
+
+		source_to_item = {"MAIN": "ITEM-MAIN", "PANEL-1": "SF-PANEL-1"}
+		with patch.object(dri, "_get_default_bom", return_value="OLD-DEFAULT-BOM"), \
+			patch.object(dri.frappe, "db", SimpleNamespace(get_value=lambda *args, **kwargs: "Kg")), \
+			patch.object(dri, "_make_bom_row", side_effect=lambda item, qty, uom, child, row: {"item_code": item, "qty": qty, "uom": uom, "stock_uom": uom, "conversion_factor": 1, "bom_no": child}), \
+			patch.object(dri, "_get_or_create_submitted_bom", side_effect=fake_bom):
+			dri._create_bom_hierarchy(design_item, parsed, source_to_item)
+
+		self.assertEqual(created_for[0][0], "SF-PANEL-1")
+		self.assertAlmostEqual(created_for[0][1], 2.0957112)
+
 	def test_update_bom_raw_material_row_sets_per_unit_quantities(self):
 		row = SimpleNamespace(name="bom-item-row", conversion_factor=2, rate=10, base_rate=12)
 
