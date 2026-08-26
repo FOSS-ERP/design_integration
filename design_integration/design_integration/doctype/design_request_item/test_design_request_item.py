@@ -233,7 +233,7 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(summary["reused"], ["SA-001", "PART-001"])
 		self.assertEqual(summary["barcodes"], [])
 
-	def test_existing_sheet_item_reused_without_mapping_lookup(self):
+	def test_existing_sheet_item_reused_after_mapping_lookup(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", uom="Nos")
 		parsed = {
 			"assemblies": [
@@ -256,11 +256,12 @@ class TestDesignRequestItem(TestCase):
 		}
 
 		with patch.object(dri, "_find_existing_item", side_effect=["SA-001", "P-SY-SA-0016"]), \
-			patch.object(dri, "_find_mapped_item", side_effect=Exception("mapping should not be needed")):
+			patch.object(dri, "_find_mapped_item", return_value={"erp_item": "RM-SHEET-1.5MM", "material_density": 8.5}):
 			source_to_item, summary = dri._resolve_or_create_items(design_item, parsed)
 
 		self.assertEqual(source_to_item["row:2"], "P-SY-SA-0016")
 		self.assertEqual(summary["reused"], ["SA-001", "P-SY-SA-0016"])
+		self.assertEqual(parsed["assemblies"][0]["components"][0]["raw_material_item_code"], "RM-SHEET-1.5MM")
 
 	def test_cancelled_requires_sku_and_bom(self):
 		doc = SimpleNamespace(
@@ -529,6 +530,80 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertEqual(created_for[0][0], "SF-PANEL-1")
 		self.assertAlmostEqual(created_for[0][1], 2.0957112)
+
+	def test_expected_sheet_raw_material_totals_include_parent_multipliers(self):
+		parsed = {
+			"assemblies": [
+				{
+					"source_part_no": "MAIN",
+					"qty_in_fg": 1,
+					"components": [
+						{
+							"source_part_no": "TOP",
+							"row_type": "Sheet",
+							"bounding_box_length": 100,
+							"bounding_box_width": 100,
+							"sheet_metal_thickness": 1,
+							"raw_material_density": 8,
+							"raw_material_item_code": "RM-SHEET",
+							"qty": 2,
+						},
+						{"source_part_no": "MID", "qty": 5},
+					],
+				},
+				{
+					"source_part_no": "MID",
+					"qty_in_fg": 1,
+					"components": [
+						{
+							"source_part_no": "MID-PANEL",
+							"row_type": "Sheet",
+							"bounding_box_length": 200,
+							"bounding_box_width": 100,
+							"sheet_metal_thickness": 1,
+							"raw_material_density": 8,
+							"raw_material_item_code": "RM-SHEET",
+							"qty": 3,
+						},
+					],
+				},
+			],
+			"main_components": [],
+		}
+
+		totals = dri._get_expected_sheet_raw_material_totals(parsed)
+
+		self.assertAlmostEqual(totals["RM-SHEET"], 2.56)
+
+	def test_generated_sheet_bom_totals_reject_stale_child_bom_quantities(self):
+		parsed = {
+			"assemblies": [
+				{
+					"source_part_no": "MAIN",
+					"qty_in_fg": 1,
+					"components": [
+						{
+							"source_part_no": "TOP",
+							"row_type": "Sheet",
+							"bounding_box_length": 100,
+							"bounding_box_width": 100,
+							"sheet_metal_thickness": 1,
+							"raw_material_density": 8,
+							"raw_material_item_code": "RM-SHEET",
+							"qty": 1,
+							"source_row": 2,
+						},
+					],
+				},
+			],
+			"main_components": [],
+		}
+
+		with patch.object(dri, "_get_expected_exploded_rows_from_bom", return_value=[{"item_code": "RM-SHEET", "stock_qty": 0.16}]), \
+			patch.object(dri, "_", lambda message: message), \
+			patch.object(dri.frappe, "throw", side_effect=Exception("mismatch")):
+			with self.assertRaises(Exception):
+				dri._validate_generated_sheet_bom_totals("BOM-FG-001", parsed)
 
 	def test_update_bom_raw_material_row_sets_per_unit_quantities(self):
 		row = SimpleNamespace(name="bom-item-row", conversion_factor=2, rate=10, base_rate=12)

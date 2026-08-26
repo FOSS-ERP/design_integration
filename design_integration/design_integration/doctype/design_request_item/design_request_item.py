@@ -362,6 +362,7 @@ def generate_bom_from_design_sheet(design_request_item: str):
         final_bom_doc = frappe.get_doc("BOM", final_fg_bom)
         if final_bom_doc.item != fg_item_code or final_bom_doc.docstatus != 1:
             frappe.throw(_("Generated final BOM is not a submitted BOM for {0}.").format(fg_item_code))
+        _validate_generated_sheet_bom_totals(final_fg_bom, parsed)
 
         design_item.db_set("bom_name", final_fg_bom, update_modified=False)
         design_item.db_set("bom_created", 1, update_modified=False)
@@ -947,12 +948,14 @@ def _resolve_or_create_items(design_item, parsed):
         key = _get_source_key(row)
         if key in source_to_item:
             continue
+        if not is_assembly and _is_sheet_row(row) and not row.get("raw_material_item_code"):
+            _set_sheet_raw_material_mapping(row)
         item_code = _find_existing_item(row, created_item_codes)
         if item_code:
             source_to_item[key] = item_code
             summary["reused"].append(item_code)
             continue
-        if not is_assembly:
+        if not is_assembly and not row.get("raw_material_item_code"):
             mapping = _find_mapped_item(row)
             if mapping:
                 row["raw_material_item_code"] = mapping.get("erp_item")
@@ -1031,6 +1034,21 @@ def _find_mapped_item(row):
             )
         )
     return None
+
+
+def _set_sheet_raw_material_mapping(row):
+    mapping = _find_mapped_item(row)
+    if not mapping:
+        frappe.throw(
+            _("Row {0}: No Design BOM Item Mapping found for DESCRIPTION {1}, Sheet Metal Thickness {2}, Material {3}.").format(
+                row.get("source_row"),
+                row.get("row_type"),
+                row.get("sheet_metal_thickness"),
+                row.get("material") or "-",
+            )
+        )
+    row["raw_material_item_code"] = mapping.get("erp_item")
+    row["raw_material_density"] = flt(mapping.get("material_density"))
 
 
 def _is_sheet_row(row):
@@ -1395,6 +1413,78 @@ def _get_sheet_raw_material_qty(component):
     return flt(component.get("gross_weight")) or flt(component.get("mass"))
 
 
+def _validate_generated_sheet_bom_totals(root_bom, parsed):
+    expected_totals = _get_expected_sheet_raw_material_totals(parsed)
+    if not expected_totals:
+        return
+
+    actual_totals = {}
+    expected_items = set(expected_totals)
+    for row in _get_expected_exploded_rows_from_bom(root_bom):
+        item_code = row.get("item_code")
+        if item_code in expected_items:
+            actual_totals[item_code] = actual_totals.get(item_code, 0) + flt(row.get("stock_qty"))
+
+    errors = []
+    for item_code, expected_qty in sorted(expected_totals.items()):
+        actual_qty = actual_totals.get(item_code, 0)
+        if abs(actual_qty - expected_qty) > 0.000001:
+            errors.append(
+                _("{0}: expected {1}, generated {2}").format(
+                    item_code,
+                    flt(expected_qty, 6),
+                    flt(actual_qty, 6),
+                )
+            )
+
+    if errors:
+        frappe.throw(
+            _("Generated BOM raw material totals do not match the uploaded sheet. {0}").format("<br>".join(errors))
+        )
+
+
+def _get_expected_sheet_raw_material_totals(parsed):
+    graph = _build_dependency_graph(parsed)
+    assembly_map = {_get_source_key(assembly): assembly for assembly in parsed.get("assemblies", [])}
+    child_sources = {child for children in graph.values() for child in children}
+    top_level_sources = [
+        _get_source_key(assembly)
+        for assembly in parsed.get("assemblies", [])
+        if _get_source_key(assembly) not in child_sources
+    ]
+    totals = {}
+
+    def add_sheet_component(component, multiplier):
+        raw_material_item = component.get("raw_material_item_code")
+        if not raw_material_item:
+            return
+        raw_qty = _get_sheet_raw_material_qty(component)
+        if raw_qty <= 0:
+            frappe.throw(_("Row {0}: Raw material quantity could not be calculated for sheet BOM.").format(component.get("source_row")))
+        totals[raw_material_item] = totals.get(raw_material_item, 0) + raw_qty * multiplier * flt(component.get("qty"))
+
+    def walk_assembly(source, multiplier):
+        assembly = assembly_map.get(source)
+        if not assembly:
+            return
+        for component in assembly.get("components", []):
+            child_source = component.get("assembly_source_key")
+            component_qty = flt(component.get("qty"))
+            if child_source and child_source in assembly_map:
+                walk_assembly(child_source, multiplier * component_qty)
+            else:
+                add_sheet_component(component, multiplier)
+
+    for source in top_level_sources:
+        assembly = assembly_map[source]
+        walk_assembly(source, flt(assembly.get("qty_in_fg")) or 1)
+
+    for component in parsed.get("main_components", []):
+        add_sheet_component(component, 1)
+
+    return totals
+
+
 @frappe.whitelist()
 def repair_generated_sheet_bom_raw_material_quantities(design_request_item=None, root_bom=None, bom_file=None, dry_run=1, use_history=0):
     """Repair generated sheet-part BOM raw-material qty from the original imported sheet."""
@@ -1612,9 +1702,7 @@ def _apply_mappings_to_sheet_components(parsed):
     for component in _iter_parsed_components(parsed):
         if not _is_sheet_row(component):
             continue
-        mapping = _find_mapped_item(component)
-        component["raw_material_item_code"] = mapping.get("erp_item")
-        component["raw_material_density"] = flt(mapping.get("material_density"))
+        _set_sheet_raw_material_mapping(component)
 
 
 def _iter_parsed_components(parsed):
