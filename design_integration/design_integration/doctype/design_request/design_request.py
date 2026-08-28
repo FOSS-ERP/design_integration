@@ -60,6 +60,20 @@ class DesignRequest(Document):
     def on_update(self):
         """Actions on update"""
         self.check_completion_status()
+
+    def on_trash(self):
+        """Remove linked standalone design items before deleting this request."""
+        self.cleanup_design_request_items()
+
+    def cleanup_design_request_items(self):
+        for row in self.items or []:
+            design_item = getattr(row, "design_request_item", None)
+            if not design_item:
+                continue
+            _unlink_design_request_item_child(row.name)
+            _unlink_standalone_design_request_item(design_item)
+            if frappe.db.exists("Design Request Item", design_item):
+                frappe.delete_doc("Design Request Item", design_item, ignore_permissions=True)
     
     def set_request_date(self):
         """Set request date if not set"""
@@ -406,6 +420,76 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
     except Exception as e:
         frappe.log_error(f"Failed to create design request: {str(e)}")
         frappe.throw(f"Failed to create design request: {str(e)}")
+
+
+@frappe.whitelist()
+def remove_design_request_item(design_request, design_request_item):
+    """Remove one linked standalone design item and its row from the parent request."""
+    frappe.only_for(("System Manager", "Design Manager"))
+
+    if not design_request or not design_request_item:
+        frappe.throw(_("Design Request and Design Request Item are required."))
+
+    design_request_doc = frappe.get_doc("Design Request", design_request)
+    target_row = None
+    for row in design_request_doc.items or []:
+        if getattr(row, "design_request_item", None) == design_request_item:
+            target_row = row
+            break
+
+    if not target_row:
+        frappe.throw(
+            _("Design Request Item {0} is not linked to Design Request {1}.").format(
+                design_request_item,
+                design_request,
+            )
+        )
+
+    so_detail = getattr(target_row, "so_detail", None)
+    child_row_name = target_row.name
+
+    _unlink_design_request_item_child(child_row_name)
+    _unlink_standalone_design_request_item(design_request_item)
+
+    if frappe.db.exists("Design Request Item", design_request_item):
+        frappe.delete_doc("Design Request Item", design_request_item, ignore_permissions=True)
+
+    design_request_doc = frappe.get_doc("Design Request", design_request)
+    design_request_doc.items = [
+        row for row in design_request_doc.items or []
+        if row.name != child_row_name
+    ]
+    design_request_doc.save(ignore_permissions=True)
+
+    return {
+        "design_request": design_request,
+        "design_request_item": design_request_item,
+        "so_detail": so_detail,
+        "deleted": True,
+    }
+
+
+def _unlink_design_request_item_child(child_row_name):
+    if child_row_name and frappe.db.exists("Design Request Item Child", child_row_name):
+        frappe.db.set_value(
+            "Design Request Item Child",
+            child_row_name,
+            "design_request_item",
+            None,
+            update_modified=False,
+        )
+
+
+def _unlink_standalone_design_request_item(design_request_item):
+    if design_request_item and frappe.db.exists("Design Request Item", design_request_item):
+        frappe.db.set_value(
+            "Design Request Item",
+            design_request_item,
+            "design_request",
+            None,
+            update_modified=False,
+        )
+
 
 @frappe.whitelist()
 def get_all_design_items(filters=None, sort_by="creation", sort_order="desc"):

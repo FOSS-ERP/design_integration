@@ -187,6 +187,12 @@ frappe.ui.form.on("Design Request", {
                 frm.add_custom_button(__("Add Comment"), () => {
                     frm.events.show_comment_dialog(frm);
                 }, __("Actions"));
+
+                if ((frm.doc.items || []).some(row => row.design_request_item)) {
+                    frm.add_custom_button(__("Remove Design Item"), () => {
+                        frm.events.show_remove_design_item_dialog(frm);
+                    }, __("Actions"));
+                }
             }
         }
     },
@@ -308,6 +314,58 @@ frappe.ui.form.on("Design Request", {
                 });
             },
             primary_action_label: __("Add")
+        });
+        d.show();
+    },
+
+    show_remove_design_item_dialog: function(frm) {
+        const linked_items = (frm.doc.items || [])
+            .filter(row => row.design_request_item)
+            .map(row => ({
+                label: `${row.design_request_item} - ${row.item_name || row.item_code || ""}`,
+                value: row.design_request_item
+            }));
+        const item_by_label = {};
+        linked_items.forEach(row => {
+            item_by_label[row.label] = row.value;
+        });
+
+        if (!linked_items.length) {
+            frappe.msgprint(__("No linked Design Request Items found."));
+            return;
+        }
+
+        let d = new frappe.ui.Dialog({
+            title: __("Remove Design Item"),
+            fields: [
+                {
+                    fieldtype: "Select",
+                    fieldname: "design_request_item",
+                    label: __("Design Request Item"),
+                    options: linked_items.map(row => row.label),
+                    reqd: 1
+                }
+            ],
+            primary_action: function(values) {
+                const design_request_item = item_by_label[values.design_request_item];
+                frappe.confirm(
+                    __("This will delete the selected Design Request Item and remove it from this request. Continue?"),
+                    () => {
+                        frappe.call({
+                            method: "design_integration.design_integration.doctype.design_request.design_request.remove_design_request_item",
+                            args: {
+                                design_request: frm.docname,
+                                design_request_item: design_request_item
+                            },
+                            callback: function() {
+                                d.hide();
+                                frm.reload_doc();
+                            }
+                        });
+                    }
+                );
+            },
+            primary_action_label: __("Remove")
         });
         d.show();
     }
