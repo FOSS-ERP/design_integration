@@ -663,3 +663,99 @@ class TestDesignRequestItem(TestCase):
 		row = dri._bom_signature([{"item_code": "FG-001", "qty": 1, "uom": "Nos", "bom_no": "BOM-SA"}])
 
 		self.assertEqual(row, [("FG-001", 1.0, "Nos", "BOM-SA")])
+
+	def test_update_sales_order_item_from_design_replaces_linked_so_row(self):
+		design_doc = SimpleNamespace(
+			name="DES-IT-000001",
+			design_status="Nesting",
+			new_item_code="FG-001",
+			design_request="DR-001",
+			sku_generated=1,
+			item_created=1,
+			current_stage="Nesting",
+			new_item_name="",
+			save=Mock(),
+		)
+		item_doc = SimpleNamespace(item_code="FG-001", item_name="Finished Item", description="Finished Item Desc", stock_uom="Nos")
+		so_item_doc = SimpleNamespace(
+			name="so-item-1",
+			parent="SO-001",
+			item_code="CUSTOM-ITEM",
+			qty=1,
+			uom="Nos",
+			stock_uom="Nos",
+		)
+		so_doc = SimpleNamespace(name="SO-001", docstatus=1)
+		set_value = Mock()
+
+		def fake_get_doc(doctype, name):
+			return {
+				("Design Request Item", "DES-IT-000001"): design_doc,
+				("Item", "FG-001"): item_doc,
+				("Sales Order Item", "so-item-1"): so_item_doc,
+				("Sales Order", "SO-001"): so_doc,
+			}[(doctype, name)]
+
+		frappe = SimpleNamespace(
+			get_doc=fake_get_doc,
+			get_all=Mock(return_value=[{"name": "child-row-1", "so_detail": "so-item-1"}]),
+			db=SimpleNamespace(exists=Mock(return_value=True), set_value=set_value),
+			throw=Mock(side_effect=Exception("throw")),
+			session=SimpleNamespace(user="Administrator"),
+			_dict=lambda value: SimpleNamespace(**value),
+		)
+
+		with patch.object(dri, "frappe", frappe), patch.object(dri, "now_datetime", return_value="2026-09-02 10:00:00"):
+			result = dri.update_sales_order_item_from_design.__wrapped__("DES-IT-000001")
+
+		self.assertEqual(result["sales_order"], "SO-001")
+		self.assertEqual(result["sales_order_item"], "so-item-1")
+		self.assertEqual(result["old_item_code"], "CUSTOM-ITEM")
+		self.assertEqual(result["new_item_code"], "FG-001")
+		set_value.assert_any_call(
+			"Sales Order Item",
+			"so-item-1",
+			{
+				"item_code": "FG-001",
+				"item_name": "Finished Item",
+				"description": "Finished Item Desc",
+				"uom": "Nos",
+				"stock_uom": "Nos",
+				"conversion_factor": 1,
+				"stock_qty": 1.0,
+			},
+			update_modified=False,
+		)
+		set_value.assert_any_call(
+			"Design Request Item Child",
+			"child-row-1",
+			{
+				"new_item_code": "FG-001",
+				"new_item_name": "Finished Item",
+				"design_status": "SO Updated",
+				"current_stage": "SO Updated",
+				"sku_generated": 1,
+				"item_created": 1,
+			},
+			update_modified=False,
+		)
+		self.assertEqual(design_doc.design_status, "SO Updated")
+		self.assertEqual(design_doc.current_stage, "SO Updated")
+		design_doc.save.assert_called_once_with(ignore_permissions=True)
+
+	def test_update_sales_order_item_from_design_requires_nesting_status(self):
+		design_doc = SimpleNamespace(
+			name="DES-IT-000001",
+			design_status="BOM",
+			new_item_code="FG-001",
+			design_request="DR-001",
+		)
+		frappe = SimpleNamespace(
+			get_doc=Mock(return_value=design_doc),
+			db=SimpleNamespace(exists=Mock(return_value=True)),
+			throw=Mock(side_effect=Exception("blocked")),
+		)
+
+		with patch.object(dri, "frappe", frappe):
+			with self.assertRaises(Exception):
+				dri.update_sales_order_item_from_design.__wrapped__("DES-IT-000001")

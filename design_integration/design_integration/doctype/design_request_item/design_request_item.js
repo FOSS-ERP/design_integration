@@ -217,6 +217,10 @@ frappe.ui.form.on("Design Request Item", {
             frm.set_value("new_item_name", "");
         }
     },
+
+    update_sales_order_item: function(frm) {
+        updateSalesOrderItemFromDesign(frm);
+    },
     
     bom_name: function(frm) {
         // Auto-update BOM Created when BOM is selected
@@ -600,7 +604,7 @@ function createTwoColumnLayout(frm) {
 function enforceDesignStatusOptions(frm) {
     // Allowed sets
     const preApproval = ['Pending','Approval Drawing','Send for Approval','Cancelled'];
-    const postApproval = ['Design','Modelling','Production Drawing','SKU Generation','BOM','Nesting','Completed','Cancelled'];
+    const postApproval = ['Design','Modelling','Production Drawing','SKU Generation','BOM','Nesting','SO Updated','Completed','Cancelled'];
 
     let options = preApproval;
     if (frm.doc.approval_status === 'Approved') {
@@ -627,7 +631,7 @@ function canCloseDesignItem(frm) {
 
 
 function showStatusDialog(frm) {
-    let status_options = ['Pending','Approval Drawing','Send for Approval','Design','Modelling','Production Drawing','SKU Generation','BOM','Nesting','Completed','Cancelled'];
+    let status_options = ['Pending','Approval Drawing','Send for Approval','Design','Modelling','Production Drawing','SKU Generation','BOM','Nesting','SO Updated','Completed','Cancelled'];
     if (!canCloseDesignItem(frm)) {
         status_options = status_options.filter(status => !['Completed', 'Cancelled'].includes(status));
     }
@@ -646,6 +650,63 @@ function showStatusDialog(frm) {
             }, 3);
         });
     }, __('Update Status'), __('Update'));
+}
+
+function updateSalesOrderItemFromDesign(frm) {
+    if (frm.is_dirty()) {
+        frappe.msgprint({
+            title: __('Save Required'),
+            message: __('Please save the Design Request Item before updating the Sales Order.'),
+            indicator: 'orange'
+        });
+        return;
+    }
+
+    if (frm.doc.design_status !== 'Nesting') {
+        frappe.msgprint({
+            title: __('Cannot Update Sales Order'),
+            message: __('Sales Order can be updated only from Nesting status.'),
+            indicator: 'orange'
+        });
+        return;
+    }
+
+    if (!frm.doc.new_item_code) {
+        frappe.msgprint({
+            title: __('Cannot Update Sales Order'),
+            message: __('Final Item Code is required before updating the Sales Order.'),
+            indicator: 'orange'
+        });
+        return;
+    }
+
+    frappe.confirm(
+        __('This will replace the original Sales Order item with Final Item Code {0} and mark this Design Request Item as SO Updated. Continue?', [frm.doc.new_item_code]),
+        function() {
+            frappe.call({
+                method: 'design_integration.design_integration.doctype.design_request_item.design_request_item.update_sales_order_item_from_design',
+                args: {
+                    docname: frm.doc.name
+                },
+                freeze: true,
+                freeze_message: __('Updating Sales Order Item...'),
+                callback: function(r) {
+                    if (!r.exc && r.message) {
+                        frappe.msgprint({
+                            title: __('Sales Order Updated'),
+                            message: __('Sales Order {0} item updated from {1} to {2}.', [
+                                r.message.sales_order,
+                                r.message.old_item_code,
+                                r.message.new_item_code
+                            ]),
+                            indicator: 'green'
+                        });
+                        frm.reload_doc();
+                    }
+                }
+            });
+        }
+    );
 }
 
 function showAssignDialog(frm) {

@@ -257,7 +257,8 @@ frappe.pages['design-tasks'].on_page_load = function(wrapper) {
             "Production Drawing": ["SKU Generation"],
             "SKU Generation": ["BOM"],
             "BOM": ["Nesting"],
-            "Nesting": ["Completed"]
+            "Nesting": ["SO Updated", "Completed"],
+            "SO Updated": ["Completed"]
         };
         
         let current_status = task.design_status;
@@ -267,8 +268,8 @@ frappe.pages['design-tasks'].on_page_load = function(wrapper) {
         let role_permissions = {
             "Project Manager": ["Approval Drawing", "Send for Approval", "Design"],
             "Project User": ["Approval Drawing", "Send for Approval", "Design"],
-            "Design Manager": ["Send for Approval", "Modelling", "Production Drawing", "BOM", "Nesting"],
-            "Design User": ["Send for Approval", "Modelling", "Production Drawing", "BOM", "Nesting"]
+            "Design Manager": ["Send for Approval", "Modelling", "Production Drawing", "BOM", "Nesting", "SO Updated"],
+            "Design User": ["Send for Approval", "Modelling", "Production Drawing", "BOM", "Nesting", "SO Updated"]
         };
         
         let allowed_statuses = [];
@@ -327,6 +328,7 @@ frappe.pages['design-tasks'].on_page_load = function(wrapper) {
             'SKU Generation': 'pink',
             'BOM': 'success',
             'Nesting': 'dark',
+            'SO Updated': 'success',
             'Completed': 'success',
             'Cancelled': 'danger'
         };

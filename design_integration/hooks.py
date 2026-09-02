@@ -23,6 +23,7 @@ app_include_js = [
 doctype_js = {
     "Project": "public/js/project.js",
     "Purchase Order": "public/js/purchase_order.js",
+    "Purchase Receipt": "public/js/purchase_receipt.js",
     "Production Plan": "public/js/production_plan.js",
     "Stock Entry": "public/js/stock_entry.js",
 }
@@ -37,6 +38,12 @@ after_migrate = "design_integration.design_integration.custom_field.create_custo
 
 # DocType Events
 doc_events = {
+	"Purchase Order": {
+		"validate": "design_integration.design_integration.subcontracting.sync_subcontract_raw_material_details",
+	},
+	"Purchase Receipt": {
+		"validate": "design_integration.design_integration.subcontracting.sync_subcontract_raw_material_details",
+	},
 	# "Sales Order": {
 	# 	"on_submit": "design_integration.design_integration.doctype.design_request.design_request.on_sales_order_submit"
 	# }
