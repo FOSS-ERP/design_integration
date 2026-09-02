@@ -49,7 +49,7 @@
    "fieldtype": "Select",
    "label": "Design Status",
    "default": "Pending",
-   "options": "Pending\nApproval Drawing\nSend for Approval\nDesign\nModelling\nProduction Drawing\nSKU Generation\nBOM\nNesting\nCompleted\nCancelled"
+   "options": "Pending\nApproval Drawing\nSend for Approval\nDesign\nModelling\nProduction Drawing\nSKU Generation\nBOM\nNesting\nSO Updated\nCompleted\nCancelled"
   },
   {
    "fieldname": "current_stage",

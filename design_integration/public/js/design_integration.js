@@ -510,6 +510,7 @@ frappe.listview_settings['Design Request Item'] = {
                 'SKU Generation': 'pink',
                 'BOM': 'brown',
                 'Nesting': 'gray',
+                'SO Updated': 'green',
                 'Completed': 'green',
                 'Cancelled': 'red',
                 'On Hold': 'red'

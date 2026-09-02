@@ -216,6 +216,100 @@ def update_design_status(docname, new_status):
         return {"success": False, "error": str(e)}
 
 
+@frappe.whitelist()
+def update_sales_order_item_from_design(docname):
+    """Replace the originating Sales Order Item with the final item from design."""
+    if not docname:
+        frappe.throw(_("Design Request Item is required."))
+
+    doc = frappe.get_doc("Design Request Item", docname)
+    _validate_sales_order_update_ready(doc)
+
+    link = _get_sales_order_item_link_for_design_item(doc)
+    item = frappe.get_doc("Item", doc.new_item_code)
+    so_item = frappe.get_doc("Sales Order Item", link.so_detail)
+    sales_order = frappe.get_doc("Sales Order", so_item.parent)
+    if sales_order.docstatus == 2:
+        frappe.throw(_("Sales Order {0} is cancelled.").format(sales_order.name))
+
+    original_item_code = so_item.item_code
+    stock_uom = item.stock_uom or so_item.stock_uom or so_item.uom
+    qty = flt(so_item.qty)
+    so_item_values = {
+        "item_code": item.item_code,
+        "item_name": item.item_name,
+        "description": item.description or item.item_name,
+        "uom": stock_uom,
+        "stock_uom": stock_uom,
+        "conversion_factor": 1,
+        "stock_qty": qty,
+    }
+    frappe.db.set_value("Sales Order Item", so_item.name, so_item_values, update_modified=False)
+    frappe.db.set_value("Sales Order", sales_order.name, "modified", now_datetime(), update_modified=False)
+
+    child_values = {
+        "new_item_code": item.item_code,
+        "new_item_name": item.item_name,
+        "design_status": "SO Updated",
+        "current_stage": "SO Updated",
+        "sku_generated": 1,
+        "item_created": 1,
+    }
+    frappe.db.set_value("Design Request Item Child", link.child_row, child_values, update_modified=False)
+
+    doc.design_status = "SO Updated"
+    doc.current_stage = "SO Updated"
+    doc.new_item_name = item.item_name
+    doc.sku_generated = 1
+    doc.item_created = 1
+    doc.save(ignore_permissions=True)
+
+    return {
+        "sales_order": sales_order.name,
+        "sales_order_item": so_item.name,
+        "old_item_code": original_item_code,
+        "new_item_code": item.item_code,
+        "status": "SO Updated",
+    }
+
+
+def _validate_sales_order_update_ready(doc):
+    if doc.design_status != "Nesting":
+        frappe.throw(_("Sales Order can be updated only from Nesting status."))
+    if not doc.new_item_code:
+        frappe.throw(_("Final Item Code is required before updating Sales Order."))
+    if not frappe.db.exists("Item", doc.new_item_code):
+        frappe.throw(_("Final Item Code {0} was not found.").format(doc.new_item_code))
+    if not doc.design_request:
+        frappe.throw(_("Design Request link is required before updating Sales Order."))
+
+
+def _get_sales_order_item_link_for_design_item(doc):
+    rows = frappe.get_all(
+        "Design Request Item Child",
+        filters={
+            "parent": doc.design_request,
+            "parenttype": "Design Request",
+            "design_request_item": doc.name,
+        },
+        fields=["name", "so_detail"],
+        limit=1,
+    )
+    if not rows:
+        frappe.throw(_("No linked Design Request child row found for {0}.").format(doc.name))
+
+    row = rows[0]
+    if not row.get("so_detail"):
+        frappe.throw(_("Linked Design Request child row has no Sales Order Item reference."))
+    if not frappe.db.exists("Sales Order Item", row.get("so_detail")):
+        frappe.throw(_("Sales Order Item {0} was not found.").format(row.get("so_detail")))
+
+    return frappe._dict({
+        "child_row": row.get("name"),
+        "so_detail": row.get("so_detail"),
+    })
+
+
 
 
 def update_approval_status(docname, new_status):
