@@ -1493,7 +1493,18 @@ def _create_sheet_component_bom(design_item, item_code, component):
         quantity=1,
         rows=rows,
         is_default=1,
-        scrap_rows=[{"item_code": raw_material_item, "stock_qty": 1}],
+        scrap_rows=[
+            {
+                "item_code": raw_material_item,
+                "stock_qty": 1,
+                "stock_uom": raw_stock_uom,
+                "uom": raw_stock_uom,
+                "rate": 0,
+                "base_rate": 0,
+                "amount": 0,
+                "base_amount": 0,
+            }
+        ],
     )
 
 
@@ -2223,7 +2234,7 @@ def _get_conversion_factor(item_code, source_uom, stock_uom, source_row):
 
 
 def _get_or_create_submitted_bom(item_code, company, quantity, rows, is_default=0, scrap_rows=None):
-    scrap_rows = scrap_rows or []
+    scrap_rows = [_make_bom_scrap_row(row) for row in (scrap_rows or [])]
     existing_boms = frappe.get_all(
         "BOM",
         filters={"item": item_code, "company": company, "docstatus": ["in", [0, 1]]},
@@ -2263,8 +2274,24 @@ def _bom_scrap_signature(rows):
         signature.append((
             get("item_code"),
             flt(get("stock_qty")),
+            get("stock_uom"),
+            flt(get("rate")),
+            flt(get("amount")),
         ))
     return sorted(signature)
+
+
+def _make_bom_scrap_row(row):
+    item_code = row.get("item_code")
+    stock_uom = row.get("stock_uom") or frappe.db.get_value("Item", item_code, "stock_uom")
+    scrap_row = dict(row)
+    scrap_row["stock_uom"] = stock_uom
+    scrap_row["uom"] = row.get("uom") or stock_uom
+    scrap_row["rate"] = 0
+    scrap_row["base_rate"] = 0
+    scrap_row["amount"] = 0
+    scrap_row["base_amount"] = 0
+    return scrap_row
 
 
 def _bom_signature(rows):
