@@ -487,7 +487,18 @@ class TestDesignRequestItem(TestCase):
 		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 2.0957112)
 		self.assertEqual(
 			captured_scrap_rows["SF-PANEL-1"],
-			[{"item_code": "RM-SHEET-1MM", "stock_qty": 1, "stock_uom": "Kg", "uom": "Kg"}],
+			[
+				{
+					"item_code": "RM-SHEET-1MM",
+					"stock_qty": 1,
+					"stock_uom": "Kg",
+					"uom": "Kg",
+					"rate": 0,
+					"base_rate": 0,
+					"amount": 0,
+					"base_amount": 0,
+				}
+			],
 		)
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
@@ -498,6 +509,10 @@ class TestDesignRequestItem(TestCase):
 
 		self.assertEqual(scrap_row["stock_uom"], "Kg")
 		self.assertEqual(scrap_row["uom"], "Kg")
+		self.assertEqual(scrap_row["rate"], 0)
+		self.assertEqual(scrap_row["base_rate"], 0)
+		self.assertEqual(scrap_row["amount"], 0)
+		self.assertEqual(scrap_row["base_amount"], 0)
 
 	def test_sheet_rows_do_not_blindly_reuse_existing_default_bom(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")

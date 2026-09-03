@@ -1493,7 +1493,18 @@ def _create_sheet_component_bom(design_item, item_code, component):
         quantity=1,
         rows=rows,
         is_default=1,
-        scrap_rows=[{"item_code": raw_material_item, "stock_qty": 1, "stock_uom": raw_stock_uom, "uom": raw_stock_uom}],
+        scrap_rows=[
+            {
+                "item_code": raw_material_item,
+                "stock_qty": 1,
+                "stock_uom": raw_stock_uom,
+                "uom": raw_stock_uom,
+                "rate": 0,
+                "base_rate": 0,
+                "amount": 0,
+                "base_amount": 0,
+            }
+        ],
     )
 
 
@@ -2264,6 +2275,8 @@ def _bom_scrap_signature(rows):
             get("item_code"),
             flt(get("stock_qty")),
             get("stock_uom"),
+            flt(get("rate")),
+            flt(get("amount")),
         ))
     return sorted(signature)
 
@@ -2274,6 +2287,10 @@ def _make_bom_scrap_row(row):
     scrap_row = dict(row)
     scrap_row["stock_uom"] = stock_uom
     scrap_row["uom"] = row.get("uom") or stock_uom
+    scrap_row["rate"] = 0
+    scrap_row["base_rate"] = 0
+    scrap_row["amount"] = 0
+    scrap_row["base_amount"] = 0
     return scrap_row
 
 
