@@ -58,12 +58,18 @@ def _zero_scrap_item_values(doc, ignored_scrap_references):
             row.amount = 0
             row.base_rate = 0
             row.base_amount = 0
+            row.taxable_value = 0
+            row.net_amount = 0
+            row.base_net_amount = 0
             row.rm_cost_per_qty = 0
             row.service_cost_per_qty = 0
             row.additional_cost_per_qty = 0
             row.scrap_cost_per_qty = 0
         elif not row.get("is_scrap_item") and row.name in ignored_scrap_references:
             row.scrap_cost_per_qty = 0
+            row.rate = flt(row.get("rm_cost_per_qty")) + flt(row.get("service_cost_per_qty")) + flt(row.get("additional_cost_per_qty"))
+            row.amount = flt(row.get("qty")) * row.rate
+            row.taxable_value = row.amount
 
 
 def _sync_purchase_order_raw_material_details(doc):

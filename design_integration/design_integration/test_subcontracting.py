@@ -146,6 +146,9 @@ class TestSubcontractingRawMaterialDetails(TestCase):
 			amount=250,
 			base_rate=250,
 			base_amount=250,
+			taxable_value=250,
+			net_amount=250,
+			base_net_amount=250,
 			rm_cost_per_qty=0,
 			service_cost_per_qty=0,
 			additional_cost_per_qty=0,
@@ -174,9 +177,13 @@ class TestSubcontractingRawMaterialDetails(TestCase):
 
 		self.assertEqual(scrap_row.rate, 0)
 		self.assertEqual(scrap_row.amount, 0)
+		self.assertEqual(scrap_row.taxable_value, 0)
+		self.assertEqual(scrap_row.net_amount, 0)
+		self.assertEqual(scrap_row.base_net_amount, 0)
 		self.assertEqual(fg_row.scrap_cost_per_qty, 0)
 		self.assertEqual(fg_row.rate, 5)
 		self.assertEqual(fg_row.amount, 5)
+		self.assertEqual(fg_row.taxable_value, 5)
 
 	def test_subcontracting_receipt_keeps_non_generated_scrap_value(self):
 		fg_row = Row(name="SCR-ITEM-1", is_scrap_item=0, bom="BOM-NORMAL-001", scrap_cost_per_qty=250)
