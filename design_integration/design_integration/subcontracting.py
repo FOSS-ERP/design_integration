@@ -12,6 +12,60 @@ def sync_subcontract_raw_material_details(doc, method=None):
         _sync_purchase_receipt_raw_material_details(doc)
 
 
+def remove_subcontracting_receipt_scrap_value(doc, method=None):
+    if doc.doctype != "Subcontracting Receipt":
+        return
+
+    ignored_scrap_references = _get_design_generated_sheet_scrap_references(doc)
+    if not ignored_scrap_references:
+        return
+
+    _zero_scrap_item_values(doc, ignored_scrap_references)
+    if hasattr(doc, "calculate_items_qty_and_amount"):
+        doc.calculate_items_qty_and_amount()
+        _zero_scrap_item_values(doc, ignored_scrap_references)
+
+
+def _get_design_generated_sheet_scrap_references(doc):
+    references = set()
+    for row in doc.get("items", []) or []:
+        if row.get("is_scrap_item") or not row.get("bom"):
+            continue
+        if _is_design_generated_sheet_bom(row.get("bom")):
+            references.add(row.name)
+    return references
+
+
+def _is_design_generated_sheet_bom(bom_name):
+    if not bom_name or not frappe.db.exists("BOM", bom_name):
+        return False
+
+    bom = frappe.get_doc("BOM", bom_name)
+    if not bom.item or not bom.item.startswith("PRT"):
+        return False
+    if len(bom.get("items") or []) != 1 or len(bom.get("scrap_items") or []) != 1:
+        return False
+
+    material = bom.items[0]
+    scrap = bom.scrap_items[0]
+    return material.item_code == scrap.item_code and flt(scrap.stock_qty) == 1
+
+
+def _zero_scrap_item_values(doc, ignored_scrap_references):
+    for row in doc.get("items", []) or []:
+        if row.get("is_scrap_item") and row.get("reference_name") in ignored_scrap_references:
+            row.rate = 0
+            row.amount = 0
+            row.base_rate = 0
+            row.base_amount = 0
+            row.rm_cost_per_qty = 0
+            row.service_cost_per_qty = 0
+            row.additional_cost_per_qty = 0
+            row.scrap_cost_per_qty = 0
+        elif not row.get("is_scrap_item") and row.name in ignored_scrap_references:
+            row.scrap_cost_per_qty = 0
+
+
 def _sync_purchase_order_raw_material_details(doc):
     if not doc.get("is_subcontracted"):
         return

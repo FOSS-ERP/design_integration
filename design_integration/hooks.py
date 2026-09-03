@@ -44,6 +44,9 @@ doc_events = {
 	"Purchase Receipt": {
 		"validate": "design_integration.design_integration.subcontracting.sync_subcontract_raw_material_details",
 	},
+	"Subcontracting Receipt": {
+		"validate": "design_integration.design_integration.subcontracting.remove_subcontracting_receipt_scrap_value",
+	},
 	# "Sales Order": {
 	# 	"on_submit": "design_integration.design_integration.doctype.design_request.design_request.on_sales_order_submit"
 	# }
