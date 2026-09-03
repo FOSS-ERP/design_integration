@@ -485,9 +485,19 @@ class TestDesignRequestItem(TestCase):
 		self.assertEqual(created_for, ["SF-PANEL-1", "SF-PANEL-2", "ITEM-MAIN", "FG-001"])
 		self.assertEqual(captured_rows["SF-PANEL-1"][0]["item_code"], "RM-SHEET-1MM")
 		self.assertAlmostEqual(captured_rows["SF-PANEL-1"][0]["qty"], 2.0957112)
-		self.assertEqual(captured_scrap_rows["SF-PANEL-1"], [{"item_code": "RM-SHEET-1MM", "stock_qty": 1}])
+		self.assertEqual(
+			captured_scrap_rows["SF-PANEL-1"],
+			[{"item_code": "RM-SHEET-1MM", "stock_qty": 1, "stock_uom": "Kg", "uom": "Kg"}],
+		)
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["item_code"], "SF-PANEL-1")
 		self.assertEqual(captured_rows["ITEM-MAIN"][0]["bom_no"], "BOM-SF-PANEL-1")
+
+	def test_bom_scrap_rows_are_normalized_to_item_stock_uom(self):
+		with patch.object(dri.frappe, "db", SimpleNamespace(get_value=lambda *args, **kwargs: "Kg")):
+			scrap_row = dri._make_bom_scrap_row({"item_code": "RM-SHEET-1MM", "stock_qty": 1})
+
+		self.assertEqual(scrap_row["stock_uom"], "Kg")
+		self.assertEqual(scrap_row["uom"], "Kg")
 
 	def test_sheet_rows_do_not_blindly_reuse_existing_default_bom(self):
 		design_item = SimpleNamespace(item_code="SRC-001", new_item_code="FG-001", company="Test Company")
