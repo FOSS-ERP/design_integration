@@ -245,6 +245,7 @@ def update_sales_order_item_from_design(docname):
         "stock_uom": stock_uom,
         "conversion_factor": 1,
         "stock_qty": qty,
+        "gst_hsn_code": item.gst_hsn_code or "",   # new
     }
     frappe.db.set_value("Sales Order Item", so_item.name, so_item_values, update_modified=False)
     frappe.db.set_value("Sales Order", sales_order.name, "modified", now_datetime(), update_modified=False)
@@ -2307,3 +2308,21 @@ def _bom_signature(rows):
             get("bom_no") or None,
         ))
     return sorted(signature)
+
+def fix_so_item_hsn(dry_run=1):
+    dry_run = cint(dry_run)
+    rows = frappe.db.sql("""
+        SELECT soi.name, soi.parent, soi.item_code,
+               soi.gst_hsn_code AS so_hsn, i.gst_hsn_code AS item_hsn
+        FROM `tabDesign Request Item Child` c
+        JOIN `tabSales Order Item` soi ON soi.name = c.so_detail
+        JOIN `tabItem` i ON i.name = soi.item_code
+        WHERE IFNULL(soi.gst_hsn_code, '') != IFNULL(i.gst_hsn_code, '')
+    """, as_dict=True)
+
+    if not dry_run:
+        for r in rows:
+            frappe.db.set_value("Sales Order Item", r.name,
+                                "gst_hsn_code", r.item_hsn, update_modified=False)
+        frappe.db.commit()
+    return rows
