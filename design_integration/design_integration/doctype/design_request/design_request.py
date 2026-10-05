@@ -292,6 +292,7 @@ def get_design_request_items(sales_order):
                 "item_name": item.item_name,
                 "description": item.description or "",
                 "custom_model": item.custom_model or "",
+                "custom_customer_asked_dimensions": item.custom_customer_asked_dimensions or "",
                 "qty": remaining_qty,
                 "uom": item.uom,
                 "so_detail": item.name,
@@ -374,6 +375,7 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
                 "item_name": so_item.item_name,
                 "description": so_item.description,
                 "custom_model": so_item.custom_model, 
+                "custom_customer_asked_dimensions": so_item.custom_customer_asked_dimensions,
                 "qty": requested_qty,
                 "uom": so_item.uom,
                 "design_status": "Pending",
@@ -394,6 +396,7 @@ def create_design_request_from_sales_order(sales_order, selected_items=None):
             item_doc.item_name = child.item_name
             item_doc.description = child.description or child.item_name
             item_doc.custom_model = child.custom_model
+            item_doc.custom_customer_asked_dimensions = child.custom_customer_asked_dimensions
             item_doc.qty = child.qty
             item_doc.uom = child.uom
             item_doc.design_status = child.design_status

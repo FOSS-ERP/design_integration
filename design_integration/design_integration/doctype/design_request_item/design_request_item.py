@@ -66,6 +66,8 @@ class DesignRequestItem(Document):
                     self.description = item.description or ""
                 if not self.custom_model:
                     self.custom_model = getattr(item, "custom_model", "") or ""
+                if not self.custom_customer_asked_dimensions:
+                    self.custom_customer_asked_dimensions = getattr(item, "custom_customer_asked_dimensions", "") or ""
             except:
                 frappe.throw(_("Item {0} not found").format(self.item_code))
     
