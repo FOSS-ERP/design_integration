@@ -1060,7 +1060,7 @@ def _resolve_or_create_items(design_item, parsed):
         item_code = _create_missing_item(design_item, row, is_assembly, generated_item_code)
         barcode = _assign_generated_item_barcode(
             item_code,
-            preferred_barcode=generated_item_code,
+            preferred_barcode=item_code,
             is_assembly=is_assembly,
         )
         source_to_item[key] = item_code
@@ -1227,32 +1227,48 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
     if not frappe.db.exists("UOM", uom):
         frappe.throw(_("Row {0}: UOM {1} does not exist.").format(row.get("source_row"), uom))
 
-    item = frappe.new_doc("Item")
-    if generated_item_code:
-        item.item_code = generated_item_code
-    item.item_name = row.get("part_name") or row.get("source_part_no")
-    item.description = row.get("part_name") or row.get("source_part_no")
-    item.item_group = _get_default_item_group(design_item, is_assembly)
-    item.stock_uom = uom
-    item.is_stock_item = 1
-    if _is_sheet_row(row) and frappe.get_meta("Item").has_field("is_sub_contracted_item"):
-        item.is_sub_contracted_item = 1
-    if frappe.get_meta("Item").has_field("gst_hsn_code"):
-        hsn_code = frappe.db.get_value("Item", _get_finished_good_item_code(design_item), "gst_hsn_code")
-        if hsn_code:
-            item.gst_hsn_code = hsn_code
+    proposed_item_code = _clean_text(generated_item_code or row.get("source_part_no"))
+    for attempt in range(100):
+        if attempt or (proposed_item_code and frappe.db.exists("Item", proposed_item_code)):
+            proposed_item_code = _get_generated_item_code_for_row(row, is_assembly)
 
-    engineering_field = _get_engineering_reference_field()
-    if engineering_field and row.get("source_part_no") and row.get("source_part_no") != item.item_name:
-        item.set(engineering_field, row.get("source_part_no"))
+        item = frappe.new_doc("Item")
+        if proposed_item_code:
+            item.item_code = proposed_item_code
+        item.item_name = row.get("part_name") or row.get("source_part_no")
+        item.description = row.get("part_name") or row.get("source_part_no")
+        item.item_group = _get_default_item_group(design_item, is_assembly)
+        item.stock_uom = uom
+        item.is_stock_item = 1
+        if _is_sheet_row(row) and frappe.get_meta("Item").has_field("is_sub_contracted_item"):
+            item.is_sub_contracted_item = 1
+        if frappe.get_meta("Item").has_field("gst_hsn_code"):
+            hsn_code = frappe.db.get_value("Item", _get_finished_good_item_code(design_item), "gst_hsn_code")
+            if hsn_code:
+                item.gst_hsn_code = hsn_code
 
-    item.insert()
-    desired_item_code = _clean_text(generated_item_code or row.get("source_part_no"))
-    if desired_item_code and item.name != desired_item_code and not frappe.db.exists("Item", desired_item_code):
-        frappe.rename_doc("Item", item.name, desired_item_code, force=True)
-        item.name = desired_item_code
-        frappe.db.set_value("Item", desired_item_code, "item_code", desired_item_code, update_modified=False)
-    return item.name
+        engineering_field = _get_engineering_reference_field()
+        if engineering_field and row.get("source_part_no") and row.get("source_part_no") != item.item_name:
+            item.set(engineering_field, row.get("source_part_no"))
+
+        try:
+            item.insert()
+        except (frappe.DuplicateEntryError, frappe.ValidationError):
+            # ERPNext raises "Item has variants" before the duplicate-key check when
+            # a generated code collides with an existing Item Template.
+            if proposed_item_code and frappe.db.exists("Item", proposed_item_code):
+                continue
+            raise
+
+        if proposed_item_code and item.name != proposed_item_code and not frappe.db.exists("Item", proposed_item_code):
+            frappe.rename_doc("Item", item.name, proposed_item_code, force=True)
+            item.name = proposed_item_code
+            frappe.db.set_value("Item", proposed_item_code, "item_code", proposed_item_code, update_modified=False)
+        return item.name
+
+    frappe.throw(
+        _("Row {0}: Could not generate a unique Item Code after 100 attempts.").format(row.get("source_row"))
+    )
 
 
 def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembly=False):
