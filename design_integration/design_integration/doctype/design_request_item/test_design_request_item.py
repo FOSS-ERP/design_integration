@@ -10,6 +10,18 @@ from design_integration.design_integration.doctype.design_request_item import de
 
 
 class TestDesignRequestItem(TestCase):
+	def test_preserve_generated_item_code_after_external_naming_hook(self):
+		item = SimpleNamespace(
+			name="PEL-C-E1-SNT-0056",
+			item_code="PEL-C-E1-SNT-0056",
+			flags={"design_generated_item_code": "PRT000621"},
+		)
+
+		dri.preserve_generated_item_code(item)
+
+		self.assertEqual(item.name, "PRT000621")
+		self.assertEqual(item.item_code, "PRT000621")
+
 	def make_workbook(self, rows):
 		wb = Workbook()
 		ws = wb.active

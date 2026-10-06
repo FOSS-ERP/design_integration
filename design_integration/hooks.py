@@ -38,6 +38,9 @@ after_migrate = "design_integration.design_integration.custom_field.create_custo
 
 # DocType Events
 doc_events = {
+	"Item": {
+		"autoname": "design_integration.design_integration.doctype.design_request_item.design_request_item.preserve_generated_item_code",
+	},
 	"Purchase Order": {
 		"validate": "design_integration.design_integration.subcontracting.sync_subcontract_raw_material_details",
 	},

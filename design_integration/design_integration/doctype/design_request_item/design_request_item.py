@@ -1235,6 +1235,7 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
         item = frappe.new_doc("Item")
         if proposed_item_code:
             item.item_code = proposed_item_code
+            item.flags.design_generated_item_code = proposed_item_code
         item.item_name = row.get("part_name") or row.get("source_part_no")
         item.description = row.get("part_name") or row.get("source_part_no")
         item.item_group = _get_default_item_group(design_item, is_assembly)
@@ -1256,7 +1257,8 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
         except (frappe.DuplicateEntryError, frappe.ValidationError):
             # ERPNext raises "Item has variants" before the duplicate-key check when
             # a generated code collides with an existing Item Template.
-            if proposed_item_code and frappe.db.exists("Item", proposed_item_code):
+            collision_code = item.name or item.item_code or proposed_item_code
+            if collision_code and frappe.db.exists("Item", collision_code):
                 continue
             raise
 
@@ -1269,6 +1271,15 @@ def _create_missing_item(design_item, row, is_assembly, generated_item_code=None
     frappe.throw(
         _("Row {0}: Could not generate a unique Item Code after 100 attempts.").format(row.get("source_row"))
     )
+
+
+def preserve_generated_item_code(doc, method=None):
+    """Restore BOM-import codes after another app's Item before_insert naming hook."""
+    generated_item_code = _clean_text(doc.flags.get("design_generated_item_code"))
+    if not generated_item_code:
+        return
+    doc.item_code = generated_item_code
+    doc.name = generated_item_code
 
 
 def _assign_generated_item_barcode(item_code, preferred_barcode=None, is_assembly=False):
