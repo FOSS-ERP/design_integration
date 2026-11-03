@@ -456,7 +456,11 @@ def generate_bom_from_design_sheet(design_request_item: str):
         final_bom_doc = frappe.get_doc("BOM", final_fg_bom)
         if final_bom_doc.item != fg_item_code or final_bom_doc.docstatus != 1:
             frappe.throw(_("Generated final BOM is not a submitted BOM for {0}.").format(fg_item_code))
-        _validate_generated_sheet_bom_totals(final_fg_bom, parsed)
+        _validate_generated_sheet_bom_totals(
+            final_fg_bom,
+            parsed,
+            bom_summary.get("sheet_component_boms"),
+        )
 
         design_item.db_set("bom_name", final_fg_bom, update_modified=False)
         design_item.db_set("bom_created", 1, update_modified=False)
@@ -1440,7 +1444,7 @@ def _create_bom_hierarchy(design_item, parsed, source_to_item):
     assembly_map = {_get_source_key(assembly): assembly for assembly in parsed["assemblies"]}
     assembly_boms = {}
     component_boms = {}
-    summary = {"created": [], "reused": []}
+    summary = {"created": [], "reused": [], "sheet_component_boms": component_boms}
 
     def make_component_row(component):
         component_key = _get_source_key(component)
@@ -1545,7 +1549,17 @@ def _get_sheet_raw_material_qty(component):
     return flt(component.get("gross_weight")) or flt(component.get("mass"))
 
 
-def _validate_generated_sheet_bom_totals(root_bom, parsed):
+def _validate_generated_sheet_bom_totals(root_bom, parsed, sheet_component_boms=None):
+    if sheet_component_boms is not None:
+        _validate_sheet_component_boms(parsed, sheet_component_boms)
+        sheet_bom_overrides = _get_expected_sheet_bom_overrides(parsed, sheet_component_boms)
+        expected_rows = _get_expected_exploded_rows_from_bom(
+            root_bom,
+            bom_overrides=sheet_bom_overrides,
+        )
+        actual_rows = _get_expected_exploded_rows_from_bom(root_bom)
+        return _validate_multilevel_raw_material_totals(expected_rows, actual_rows)
+
     expected_totals = _get_expected_sheet_raw_material_totals(parsed)
     if not expected_totals:
         return
@@ -1572,6 +1586,97 @@ def _validate_generated_sheet_bom_totals(root_bom, parsed):
     if errors:
         frappe.throw(
             _("Generated BOM raw material totals do not match the uploaded sheet. {0}").format("<br>".join(errors))
+        )
+
+
+def _validate_sheet_component_boms(parsed, sheet_component_boms):
+    errors = []
+    for component in _iter_parsed_components(parsed):
+        raw_material_item = component.get("raw_material_item_code")
+        if not raw_material_item:
+            continue
+
+        bom_name = sheet_component_boms.get(_get_source_key(component))
+        if not bom_name:
+            errors.append(
+                _("Row {0}: no generated sheet BOM was found.").format(component.get("source_row"))
+            )
+            continue
+
+        expected_qty = _get_sheet_raw_material_qty(component)
+        bom = frappe.get_doc("BOM", bom_name)
+        actual_qty = sum(
+            flt(row.stock_qty)
+            for row in bom.items
+            if row.item_code == raw_material_item and not row.bom_no
+        )
+        if abs(actual_qty - expected_qty) > 0.000001:
+            errors.append(
+                _("Row {0}, BOM {1}, {2}: expected {3}, generated {4}").format(
+                    component.get("source_row"),
+                    bom_name,
+                    raw_material_item,
+                    flt(expected_qty, 6),
+                    flt(actual_qty, 6),
+                )
+            )
+
+    if errors:
+        frappe.throw(
+            _("Generated sheet BOM raw material quantities do not match the uploaded sheet. {0}").format(
+                "<br>".join(errors)
+            )
+        )
+
+
+def _get_expected_sheet_bom_overrides(parsed, sheet_component_boms):
+    overrides = {}
+    for component in _iter_parsed_components(parsed):
+        raw_material_item = component.get("raw_material_item_code")
+        bom_name = sheet_component_boms.get(_get_source_key(component))
+        if not raw_material_item or not bom_name:
+            continue
+        overrides[bom_name] = [
+            {
+                "item_code": raw_material_item,
+                "stock_qty": _get_sheet_raw_material_qty(component),
+                "stock_uom": frappe.db.get_value("Item", raw_material_item, "stock_uom"),
+                "include_item_in_manufacturing": 1,
+                "sourced_by_supplier": 0,
+            }
+        ]
+    return overrides
+
+
+def _validate_multilevel_raw_material_totals(expected_rows, actual_rows):
+    def get_totals(rows):
+        totals = {}
+        for row in rows:
+            item_code = row.get("item_code")
+            if item_code:
+                totals[item_code] = totals.get(item_code, 0) + flt(row.get("stock_qty"))
+        return totals
+
+    expected_totals = get_totals(expected_rows)
+    actual_totals = get_totals(actual_rows)
+    errors = []
+    for item_code in sorted(set(expected_totals) | set(actual_totals)):
+        expected_qty = expected_totals.get(item_code, 0)
+        actual_qty = actual_totals.get(item_code, 0)
+        if abs(actual_qty - expected_qty) > 0.000001:
+            errors.append(
+                _("{0}: expected {1}, generated {2}").format(
+                    item_code,
+                    flt(expected_qty, 6),
+                    flt(actual_qty, 6),
+                )
+            )
+
+    if errors:
+        frappe.throw(
+            _("Generated multi-level BOM raw material totals do not match the uploaded sheet and child BOMs. {0}").format(
+                "<br>".join(errors)
+            )
         )
 
 
@@ -2152,10 +2257,17 @@ def _expected_exploded_signature(bom):
     return _exploded_signature(_get_expected_exploded_rows_from_bom(bom.name))
 
 
-def _get_expected_exploded_rows_from_bom(bom_name, multiplier=1, visiting=None):
+def _get_expected_exploded_rows_from_bom(bom_name, multiplier=1, visiting=None, bom_overrides=None):
     visiting = visiting or set()
+    bom_overrides = bom_overrides or {}
     if bom_name in visiting:
         frappe.throw(_("Circular BOM dependency detected while repairing exploded items: {0}").format(bom_name))
+
+    if bom_name in bom_overrides:
+        return [
+            dict(row, stock_qty=multiplier * flt(row.get("stock_qty")))
+            for row in bom_overrides[bom_name]
+        ]
 
     visiting.add(bom_name)
     bom = frappe.get_doc("BOM", bom_name)
@@ -2165,7 +2277,12 @@ def _get_expected_exploded_rows_from_bom(bom_name, multiplier=1, visiting=None):
         if item.bom_no:
             child_bom_qty = flt(frappe.db.get_value("BOM", item.bom_no, "quantity")) or 1
             child_multiplier = multiplier * flt(item.stock_qty) / child_bom_qty
-            for child_row in _get_expected_exploded_rows_from_bom(item.bom_no, child_multiplier, visiting):
+            for child_row in _get_expected_exploded_rows_from_bom(
+                item.bom_no,
+                child_multiplier,
+                visiting,
+                bom_overrides,
+            ):
                 _add_expected_exploded_row(rows, child_row)
         elif item.item_code:
             _add_expected_exploded_row(rows, {
