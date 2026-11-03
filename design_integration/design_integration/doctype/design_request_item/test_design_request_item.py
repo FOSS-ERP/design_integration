@@ -642,6 +642,54 @@ class TestDesignRequestItem(TestCase):
 			with self.assertRaises(Exception):
 				dri._validate_generated_sheet_bom_totals("BOM-FG-001", parsed)
 
+	def test_sheet_bom_validation_ignores_target_rm_from_non_sheet_default_boms(self):
+		parsed = {
+			"assemblies": [
+				{
+					"source_key": "row:1",
+					"source_part_no": "LEG ASM",
+					"qty_in_fg": 4,
+					"components": [
+						{
+							"source_key": "row:2",
+							"source_part_no": "TOP FIXING PANEL",
+							"row_type": "Sheet",
+							"bounding_box_length": 925,
+							"bounding_box_width": 56.99,
+							"sheet_metal_thickness": 1,
+							"raw_material_density": 8.5,
+							"raw_material_item_code": "RM-SHEET",
+							"qty": 1,
+							"source_row": 2,
+						},
+						{
+							"source_key": "row:3",
+							"source_part_no": "NYLON-BUSH",
+							"qty": 1,
+							"source_row": 3,
+						},
+					],
+				},
+			],
+			"main_components": [],
+		}
+		child_bom = SimpleNamespace(
+			items=[SimpleNamespace(item_code="RM-SHEET", stock_qty=0.448083875, bom_no=None)]
+		)
+
+		multilevel_rows = [{"item_code": "RM-SHEET", "stock_qty": 0.502483875}]
+		with patch.object(dri.frappe, "get_doc", return_value=child_bom), \
+			patch.object(dri.frappe, "db", SimpleNamespace(get_value=Mock(return_value="Kg"))), \
+			patch.object(dri, "_get_expected_exploded_rows_from_bom", return_value=multilevel_rows) as exploded_rows:
+			dri._validate_generated_sheet_bom_totals(
+				"BOM-FG-001",
+				parsed,
+				{"row:2": "BOM-PRT-001"},
+			)
+
+		self.assertEqual(exploded_rows.call_count, 2)
+		self.assertTrue(exploded_rows.call_args_list[0].kwargs.get("bom_overrides"))
+
 	def test_update_bom_raw_material_row_sets_per_unit_quantities(self):
 		row = SimpleNamespace(name="bom-item-row", conversion_factor=2, rate=10, base_rate=12)
 
