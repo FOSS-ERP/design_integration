@@ -400,6 +400,7 @@ frappe.ui.form.on("Design Request Item", {
     
     approval_status: function(frm) {
         // Handle approval status changes
+        /*
         if (frm.doc.approval_status === "Approved") {
             // Show confirmation dialog
             frappe.confirm(
@@ -418,7 +419,8 @@ frappe.ui.form.on("Design Request Item", {
                     frm.set_value("approval_status", frm.doc.approval_status);
                 }
             );
-        } else if (frm.doc.approval_status === "Rejected") {
+        } else */ 
+            if (frm.doc.approval_status === "Rejected") {
             // Show confirmation dialog
             frappe.confirm(
                 __("Are you sure you want to reject this item? This will automatically change the Design Status to 'On Hold'."),
